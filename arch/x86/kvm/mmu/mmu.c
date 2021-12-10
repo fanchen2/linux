@@ -3928,7 +3928,35 @@ static bool kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault,
 		 * If the APIC access page exists but is disabled, go directly
 		 * to emulation without caching the MMIO access or creating a
 		 * MMIO SPTE.  That way the cache doesn't need to be purged
-		 * when the AVIC is re-enabled.
+		 * when APICv is re-enabled on this vCPU.
+		 *
+		 * Note that the per-VM kvm_apicv_activated() is used instead
+		 * of the per-vCPU equivalent.  Although APICv is technically
+		 * enabled on a per-vCPU basis, whether or not APICv _can_ be
+		 * enabled is tracked on a per-VM basis.  More importantly,
+		 * SPTEs and shadow page roles are per-VM.  Using the per-vCPU
+		 * flag leads to this problematic scenario:
+		 *
+		 *  1. APICv is globally enable.
+		 *  2. This vCPU takes page fault because the APIC access page
+		 *     is not mapped into the guest.
+		 *  3. This vCPU is preempted before reaching this point.
+		 *  4. APICv is globally disabled, and APIC access page SPTEs
+		 *     are zapped.
+		 *  5. This vCPU is scheduled in with APICv locally enabled.
+		 *  6. This page fault incorrectly installs a SPTE pointing at
+		 *     the APIC access page.
+		 *
+		 * The reverse scenario is also possible, e.g. this vCPU has
+		 * APICv locally disabled, but that case is benign because the
+		 * end result is only that KVM unnecessarily emulates an access
+		 * that could have been accelerated.
+		 *
+		 * Bailing from the page fault path if KVM_REQ_APICV_UPDATE is
+		 * pending after acquiring mmu_lock would avoid operating on
+		 * stale data, but requests are per-vCPU, and again page tables
+		 * are per-VM.  Thus the page fault handlers shoud synchronize
+		 * with whatever is changing APICv state, not this vCPU's flag.
 		 */
 		if (slot && slot->id == APIC_ACCESS_PAGE_PRIVATE_MEMSLOT &&
 		    !kvm_apicv_activated(vcpu->kvm)) {

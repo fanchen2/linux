@@ -12,7 +12,6 @@
 #include "kvm_util.h"
 #include "vmx.h"
 
-#define VCPU_ID	      1
 #define MSR_BITS      64
 
 #define X86_FEATURE_XSAVES	(1<<3)
@@ -40,11 +39,12 @@ int main(int argc, char *argv[])
 	struct kvm_cpuid_entry2 *entry;
 	bool xss_supported = false;
 	struct kvm_vm *vm;
+	struct kvm_vcpu *vcpu;
 	uint64_t xss_val;
 	int i, r;
 
 	/* Create VM */
-	vm = vm_create_default(VCPU_ID, 0, 0);
+	vm = vm_create_with_one_vcpu(&vcpu, NULL);
 
 	if (kvm_get_cpuid_max_basic() >= 0xd) {
 		entry = kvm_get_supported_cpuid_index(0xd, 1);
@@ -55,11 +55,11 @@ int main(int argc, char *argv[])
 		exit(KSFT_SKIP);
 	}
 
-	xss_val = vcpu_get_msr(vm, VCPU_ID, MSR_IA32_XSS);
+	xss_val = vcpu_get_msr(vm, vcpu->id, MSR_IA32_XSS);
 	TEST_ASSERT(xss_val == 0,
 		    "MSR_IA32_XSS should be initialized to zero\n");
 
-	vcpu_set_msr(vm, VCPU_ID, MSR_IA32_XSS, xss_val);
+	vcpu_set_msr(vm, vcpu->id, MSR_IA32_XSS, xss_val);
 	/*
 	 * At present, KVM only supports a guest IA32_XSS value of 0. Verify
 	 * that trying to set the guest IA32_XSS to an unsupported value fails.
@@ -67,7 +67,7 @@ int main(int argc, char *argv[])
 	 * IA32_XSS is in the KVM_GET_MSR_INDEX_LIST.
 	 */
 	for (i = 0; i < MSR_BITS; ++i) {
-		r = _vcpu_set_msr(vm, VCPU_ID, MSR_IA32_XSS, 1ull << i);
+		r = _vcpu_set_msr(vm, vcpu->id, MSR_IA32_XSS, 1ull << i);
 		TEST_ASSERT(r == 0 || is_supported_msr(MSR_IA32_XSS),
 			    "IA32_XSS was able to be set, but was not found in KVM_GET_MSR_INDEX_LIST.\n");
 	}

@@ -17,9 +17,6 @@
 #include "processor.h"
 #include "test_util.h"
 
-#define VCPU_ID_SOURCE 0
-#define VCPU_ID_TARGET 1
-
 #define CPU_ON_ENTRY_ADDR 0xfeedf00dul
 #define CPU_ON_CONTEXT_ID 0xdeadc0deul
 
@@ -72,6 +69,7 @@ static void guest_main(uint64_t target_cpu)
 int main(void)
 {
 	uint64_t target_mpidr, obs_pc, obs_x0;
+	struct kvm_vcpu *vcpu0, *vcpu1;
 	struct kvm_vcpu_init init;
 	struct kvm_vm *vm;
 	struct ucall uc;
@@ -82,19 +80,19 @@ int main(void)
 	vm_ioctl(vm, KVM_ARM_PREFERRED_TARGET, &init);
 	init.features[0] |= (1 << KVM_ARM_VCPU_PSCI_0_2);
 
-	aarch64_vcpu_add(vm, VCPU_ID_SOURCE, &init, guest_main);
+	vcpu0 = aarch64_vcpu_add(vm, 0, &init, guest_main);
 
 	/*
 	 * make sure the target is already off when executing the test.
 	 */
 	init.features[0] |= (1 << KVM_ARM_VCPU_POWER_OFF);
-	aarch64_vcpu_add(vm, VCPU_ID_TARGET, &init, guest_main);
+	vcpu1 = aarch64_vcpu_add(vm, 1, &init, guest_main);
 
-	get_reg(vm, VCPU_ID_TARGET, KVM_ARM64_SYS_REG(SYS_MPIDR_EL1), &target_mpidr);
-	vcpu_args_set(vm, VCPU_ID_SOURCE, 1, target_mpidr & MPIDR_HWID_BITMASK);
-	vcpu_run(vm, VCPU_ID_SOURCE);
+	get_reg(vm, vcpu1->id, KVM_ARM64_SYS_REG(SYS_MPIDR_EL1), &target_mpidr);
+	vcpu_args_set(vm, vcpu0->id, 1, target_mpidr & MPIDR_HWID_BITMASK);
+	vcpu_run(vm, vcpu0->id);
 
-	switch (get_ucall(vm, VCPU_ID_SOURCE, &uc)) {
+	switch (get_ucall(vm, vcpu0->id, &uc)) {
 	case UCALL_DONE:
 		break;
 	case UCALL_ABORT:
@@ -105,8 +103,8 @@ int main(void)
 		TEST_FAIL("Unhandled ucall: %lu", uc.cmd);
 	}
 
-	get_reg(vm, VCPU_ID_TARGET, ARM64_CORE_REG(regs.pc), &obs_pc);
-	get_reg(vm, VCPU_ID_TARGET, ARM64_CORE_REG(regs.regs[0]), &obs_x0);
+	get_reg(vm, vcpu1->id, ARM64_CORE_REG(regs.pc), &obs_pc);
+	get_reg(vm, vcpu1->id, ARM64_CORE_REG(regs.regs[0]), &obs_x0);
 
 	TEST_ASSERT(obs_pc == CPU_ON_ENTRY_ADDR,
 		    "unexpected target cpu pc: %lx (expected: %lx)",

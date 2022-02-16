@@ -88,11 +88,11 @@ int main(void)
 	init.features[0] |= (1 << KVM_ARM_VCPU_POWER_OFF);
 	vcpu1 = aarch64_vcpu_add(vm, 1, &init, guest_main);
 
-	get_reg(vm, vcpu1->id, KVM_ARM64_SYS_REG(SYS_MPIDR_EL1), &target_mpidr);
-	vcpu_args_set(vm, vcpu0->id, 1, target_mpidr & MPIDR_HWID_BITMASK);
-	vcpu_run(vm, vcpu0->id);
+	get_reg(vcpu1, KVM_ARM64_SYS_REG(SYS_MPIDR_EL1), &target_mpidr);
+	vcpu_args_set(vcpu0, 1, target_mpidr & MPIDR_HWID_BITMASK);
+	vcpu_run(vcpu0);
 
-	switch (get_ucall(vm, vcpu0->id, &uc)) {
+	switch (get_ucall(vcpu0, &uc)) {
 	case UCALL_DONE:
 		break;
 	case UCALL_ABORT:
@@ -103,8 +103,8 @@ int main(void)
 		TEST_FAIL("Unhandled ucall: %lu", uc.cmd);
 	}
 
-	get_reg(vm, vcpu1->id, ARM64_CORE_REG(regs.pc), &obs_pc);
-	get_reg(vm, vcpu1->id, ARM64_CORE_REG(regs.regs[0]), &obs_x0);
+	get_reg(vcpu1, ARM64_CORE_REG(regs.pc), &obs_pc);
+	get_reg(vcpu1, ARM64_CORE_REG(regs.regs[0]), &obs_x0);
 
 	TEST_ASSERT(obs_pc == CPU_ON_ENTRY_ADDR,
 		    "unexpected target cpu pc: %lx (expected: %lx)",

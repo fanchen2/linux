@@ -47,23 +47,25 @@
 
 #define MPIDR_HWID_BITMASK (0xff00fffffful)
 
-static inline void get_reg(struct kvm_vm *vm, uint32_t vcpuid, uint64_t id, uint64_t *addr)
+static inline void get_reg(struct kvm_vcpu *vcpu, uint64_t id, uint64_t *addr)
 {
 	struct kvm_one_reg reg;
+
 	reg.id = id;
 	reg.addr = (uint64_t)addr;
-	vcpu_ioctl(vm, vcpuid, KVM_GET_ONE_REG, &reg);
+	vcpu_ioctl(vcpu, KVM_GET_ONE_REG, &reg);
 }
 
-static inline void set_reg(struct kvm_vm *vm, uint32_t vcpuid, uint64_t id, uint64_t val)
+static inline void set_reg(struct kvm_vcpu *vcpu, uint64_t id, uint64_t val)
 {
 	struct kvm_one_reg reg;
+
 	reg.id = id;
 	reg.addr = (uint64_t)&val;
-	vcpu_ioctl(vm, vcpuid, KVM_SET_ONE_REG, &reg);
+	vcpu_ioctl(vcpu, KVM_SET_ONE_REG, &reg);
 }
 
-void aarch64_vcpu_setup(struct kvm_vm *vm, uint32_t vcpuid, struct kvm_vcpu_init *init);
+void aarch64_vcpu_setup(struct kvm_vcpu *vcpu, struct kvm_vcpu_init *init);
 struct kvm_vcpu *aarch64_vcpu_add(struct kvm_vm *vm, uint32_t vcpu_id,
 				  struct kvm_vcpu_init *init, void *guest_code);
 
@@ -117,7 +119,7 @@ void aarch64_get_supported_page_sizes(uint32_t ipa,
 				      bool *ps4k, bool *ps16k, bool *ps64k);
 
 void vm_init_descriptor_tables(struct kvm_vm *vm);
-void vcpu_init_descriptor_tables(struct kvm_vm *vm, uint32_t vcpuid);
+void vcpu_init_descriptor_tables(struct kvm_vcpu *vcpu);
 
 typedef void(*handler_fn)(struct ex_regs *);
 void vm_install_exception_handler(struct kvm_vm *vm,

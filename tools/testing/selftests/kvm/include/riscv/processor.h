@@ -38,24 +38,24 @@ static inline uint64_t __kvm_reg_id(uint64_t type, uint64_t idx,
 					     KVM_REG_RISCV_TIMER_REG(name), \
 					     KVM_REG_SIZE_U64)
 
-static inline void get_reg(struct kvm_vm *vm, uint32_t vcpuid, uint64_t id,
+static inline void get_reg(struct kvm_vcpu *vcpu, uint64_t id,
 			   unsigned long *addr)
 {
 	struct kvm_one_reg reg;
 
 	reg.id = id;
 	reg.addr = (unsigned long)addr;
-	vcpu_get_reg(vm, vcpuid, &reg);
+	vcpu_get_reg(vcpu, &reg);
 }
 
-static inline void set_reg(struct kvm_vm *vm, uint32_t vcpuid, uint64_t id,
+static inline void set_reg(struct kvm_vcpu *vcpu, uint64_t id,
 			   unsigned long val)
 {
 	struct kvm_one_reg reg;
 
 	reg.id = id;
 	reg.addr = (unsigned long)&val;
-	vcpu_set_reg(vm, vcpuid, &reg);
+	vcpu_set_reg(vcpu, &reg);
 }
 
 /* L3 index Bit[47:39] */

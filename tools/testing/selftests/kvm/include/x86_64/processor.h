@@ -46,6 +46,7 @@
 #define CPUID_SMX		(1ul << 6)
 #define CPUID_PCID		(1ul << 17)
 #define CPUID_XSAVE		(1ul << 26)
+#define CPUID_OSXSAVE		(1ul << 27)
 
 /* CPUID.7.EBX */
 #define CPUID_FSGSBASE		(1ul << 0)

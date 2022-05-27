@@ -14,8 +14,6 @@
 
 #define MSR_BITS      64
 
-#define X86_FEATURE_XSAVES	(1<<3)
-
 bool is_supported_msr(u32 msr_index)
 {
 	struct kvm_msr_list *list;
@@ -36,7 +34,6 @@ bool is_supported_msr(u32 msr_index)
 
 int main(int argc, char *argv[])
 {
-	struct kvm_cpuid_entry2 *entry;
 	struct kvm_vm *vm;
 	struct kvm_vcpu *vcpu;
 	uint64_t xss_val;
@@ -45,10 +42,7 @@ int main(int argc, char *argv[])
 	/* Create VM */
 	vm = vm_create_with_one_vcpu(&vcpu, NULL);
 
-	TEST_REQUIRE(kvm_get_cpuid_max_basic() >= 0xd);
-
-	entry = kvm_get_supported_cpuid_index(0xd, 1);
-	TEST_REQUIRE(entry->eax & X86_FEATURE_XSAVES);
+	TEST_REQUIRE(kvm_cpu_has(X86_FEATURE_XSAVES));
 
 	xss_val = vcpu_get_msr(vcpu, MSR_IA32_XSS);
 	TEST_ASSERT(xss_val == 0,

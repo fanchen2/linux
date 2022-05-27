@@ -395,11 +395,17 @@ void kvm_vm_restart(struct kvm_vm *vmp)
 	}
 }
 
+__attribute__((weak)) struct kvm_vcpu *vm_arch_vcpu_recreate(struct kvm_vm *vm,
+							     uint32_t vcpu_id)
+{
+	return __vm_vcpu_add(vm, vcpu_id);
+}
+
 struct kvm_vcpu *vm_recreate_with_one_vcpu(struct kvm_vm *vm)
 {
 	kvm_vm_restart(vm);
 
-	return __vm_vcpu_add(vm, 0);
+	return vm_vcpu_recreate(vm, 0);
 }
 
 /*

@@ -201,7 +201,6 @@ static void enter_guest(struct kvm_vcpu *vcpu)
 int main(void)
 {
 	struct kvm_enable_cap cap = {0};
-	struct kvm_cpuid2 *best;
 	struct kvm_vcpu *vcpu;
 	struct kvm_vm *vm;
 
@@ -213,9 +212,8 @@ int main(void)
 	cap.args[0] = 1;
 	vcpu_enable_cap(vcpu, &cap);
 
-	best = kvm_get_supported_cpuid();
-	clear_kvm_cpuid_features(best);
-	vcpu_set_cpuid(vcpu, best);
+	clear_kvm_cpuid_features(vcpu->cpuid);
+	vcpu_set_cpuid(vcpu);
 
 	vm_init_descriptor_tables(vm);
 	vcpu_init_descriptor_tables(vcpu);

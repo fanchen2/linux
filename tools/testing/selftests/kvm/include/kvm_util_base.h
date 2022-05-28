@@ -50,6 +50,9 @@ struct kvm_vcpu {
 	int fd;
 	struct kvm_vm *vm;
 	struct kvm_run *run;
+#ifdef __x86_64__
+	struct kvm_cpuid2 *cpuid;
+#endif
 	struct kvm_dirty_gfn *dirty_gfns;
 	uint32_t fetch_index;
 	uint32_t dirty_gfns_count;

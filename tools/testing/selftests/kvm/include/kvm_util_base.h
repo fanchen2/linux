@@ -411,16 +411,7 @@ static inline void kvm_has_device_attr(int dev_fd, uint32_t group, uint64_t attr
 	TEST_ASSERT(!ret, "KVM_HAS_DEVICE_ATTR failed, rc: %i errno: %i", ret, errno);
 }
 
-
-int __kvm_device_attr_access(int dev_fd, uint32_t group, uint64_t attr,
-			     void *val, unsigned long cmd);
-
-static inline int __kvm_device_attr_get(int dev_fd, uint32_t group,
-					uint64_t attr, void *val)
-{
-	return __kvm_device_attr_access(dev_fd, group, attr, val,
-					KVM_GET_DEVICE_ATTR);
-}
+int __kvm_device_attr_get(int dev_fd, uint32_t group, uint64_t attr, void *val);
 
 static inline void kvm_device_attr_get(int dev_fd, uint32_t group,
 				       uint64_t attr, void *val)
@@ -430,12 +421,7 @@ static inline void kvm_device_attr_get(int dev_fd, uint32_t group,
 	TEST_ASSERT(!ret, KVM_IOCTL_ERROR(KVM_GET_DEVICE_ATTR, ret));
 }
 
-static inline int __kvm_device_attr_set(int dev_fd, uint32_t group,
-					uint64_t attr, void *val)
-{
-	return __kvm_device_attr_access(dev_fd, group, attr, val,
-					KVM_SET_DEVICE_ATTR);
-}
+int __kvm_device_attr_set(int dev_fd, uint32_t group, uint64_t attr, void *val);
 
 static inline void kvm_device_attr_set(int dev_fd, uint32_t group,
 				       uint64_t attr, void *val)

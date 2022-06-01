@@ -1555,8 +1555,7 @@ int __kvm_create_device(struct kvm_vm *vm, uint64_t type)
 	return err ? : create_dev.fd;
 }
 
-int __kvm_device_attr_access(int dev_fd, uint32_t group, uint64_t attr,
-			     void *val, unsigned long cmd)
+int __kvm_device_attr_get(int dev_fd, uint32_t group, uint64_t attr, void *val)
 {
 	struct kvm_device_attr kvmattr = {
 		.group = group,
@@ -1565,7 +1564,19 @@ int __kvm_device_attr_access(int dev_fd, uint32_t group, uint64_t attr,
 		.addr = (uintptr_t)val,
 	};
 
-	return __kvm_ioctl(dev_fd, cmd, &kvmattr);
+	return __kvm_ioctl(dev_fd, KVM_GET_DEVICE_ATTR, &kvmattr);
+}
+
+int __kvm_device_attr_set(int dev_fd, uint32_t group, uint64_t attr, void *val)
+{
+	struct kvm_device_attr kvmattr = {
+		.group = group,
+		.attr = attr,
+		.flags = 0,
+		.addr = (uintptr_t)val,
+	};
+
+	return __kvm_ioctl(dev_fd, KVM_SET_DEVICE_ATTR, &kvmattr);
 }
 
 /*

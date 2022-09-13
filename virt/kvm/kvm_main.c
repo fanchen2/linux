@@ -468,6 +468,7 @@ static void kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
 	vcpu->kvm = kvm;
 	vcpu->vcpu_id = id;
 	vcpu->pid = NULL;
+	rwlock_init(&vcpu->pid_lock);
 #ifndef __KVM_HAVE_ARCH_WQP
 	rcuwait_init(&vcpu->wait);
 #endif
@@ -495,7 +496,7 @@ static void kvm_vcpu_destroy(struct kvm_vcpu *vcpu)
 	 * the vcpu->pid pointer, and at destruction time all file descriptors
 	 * are already gone.
 	 */
-	put_pid(rcu_dereference_protected(vcpu->pid, 1));
+	put_pid(vcpu->pid);
 
 	free_page((unsigned long)vcpu->run);
 	kmem_cache_free(kvm_vcpu_cache, vcpu);
@@ -3643,15 +3644,17 @@ EXPORT_SYMBOL_GPL(kvm_vcpu_kick);
 
 int kvm_vcpu_yield_to(struct kvm_vcpu *target)
 {
-	struct pid *pid;
 	struct task_struct *task = NULL;
 	int ret;
 
-	rcu_read_lock();
-	pid = rcu_dereference(target->pid);
-	if (pid)
-		task = get_pid_task(pid, PIDTYPE_PID);
-	rcu_read_unlock();
+	if (!read_trylock(&target->pid_lock))
+		return 0;
+
+	if (target->pid)
+		task = get_pid_task(target->pid, PIDTYPE_PID);
+
+	read_unlock(&target->pid_lock);
+
 	if (!task)
 		return 0;
 	ret = yield_to(task, 1);
@@ -3871,9 +3874,9 @@ static int vcpu_get_pid(void *data, u64 *val)
 {
 	struct kvm_vcpu *vcpu = data;
 
-	rcu_read_lock();
-	*val = pid_nr(rcu_dereference(vcpu->pid));
-	rcu_read_unlock();
+	read_lock(&vcpu->pid_lock);
+	*val = pid_nr(vcpu->pid);
+	read_unlock(&vcpu->pid_lock);
 	return 0;
 }
 
@@ -4091,7 +4094,7 @@ static long kvm_vcpu_ioctl(struct file *filp,
 		r = -EINVAL;
 		if (arg)
 			goto out;
-		oldpid = rcu_access_pointer(vcpu->pid);
+		oldpid = vcpu->pid;
 		if (unlikely(oldpid != task_pid(current))) {
 			/* The thread running this VCPU changed. */
 			struct pid *newpid;
@@ -4101,9 +4104,10 @@ static long kvm_vcpu_ioctl(struct file *filp,
 				break;
 
 			newpid = get_task_pid(current, PIDTYPE_PID);
-			rcu_assign_pointer(vcpu->pid, newpid);
-			if (oldpid)
-				synchronize_rcu();
+			write_lock(&vcpu->pid_lock);
+			vcpu->pid = newpid;
+			write_unlock(&vcpu->pid_lock);
+
 			put_pid(oldpid);
 		}
 		r = kvm_arch_vcpu_ioctl_run(vcpu);

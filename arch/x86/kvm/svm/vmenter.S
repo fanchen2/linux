@@ -289,23 +289,19 @@ SYM_FUNC_START(__svm_vcpu_run)
 
 SYM_FUNC_END(__svm_vcpu_run)
 
+#ifdef CONFIG_KVM_AMD_SEV
 /**
  * __svm_sev_es_vcpu_run - Run a SEV-ES vCPU via a transition to SVM guest mode
  * @svm:	struct vcpu_svm *
  * @spec_ctrl_intercepted: bool
  */
 SYM_FUNC_START(__svm_sev_es_vcpu_run)
-	push %_ASM_BP
-#ifdef CONFIG_X86_64
+	push %rbp
 	push %r15
 	push %r14
 	push %r13
 	push %r12
-#else
-	push %edi
-	push %esi
-#endif
-	push %_ASM_BX
+	push %rbx
 
 	/*
 	 * Save variables needed after vmexit on the stack, in inverse
@@ -318,34 +314,31 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
 	/* Save @svm. */
 	push %_ASM_ARG1
 
-.ifnc _ASM_ARG1, _ASM_DI
-	/*
-	 * Stash @svm in RDI early. On 32-bit, arguments are in RAX, RCX
-	 * and RDX which are clobbered by RESTORE_GUEST_SPEC_CTRL.
-	 */
-	mov %_ASM_ARG1, %_ASM_DI
+.ifnc _ASM_ARG1, rdi
+	RESTORE_GUEST_SPEC_CTRL expects @svm to be in RDI, trigger a build
+	error if this doesn't hold true.
 .endif
 
 	/* Clobbers RAX, RCX, RDX.  */
 	RESTORE_GUEST_SPEC_CTRL
 
 	/* Get svm->current_vmcb->pa into RAX. */
-	mov SVM_current_vmcb(%_ASM_DI), %_ASM_AX
-	mov KVM_VMCB_pa(%_ASM_AX), %_ASM_AX
+	mov SVM_current_vmcb(%rdi), %rax
+	mov KVM_VMCB_pa(%rax), %rax
 
 	/* Enter guest mode */
 	sti
 
-1:	vmrun %_ASM_AX
+1:	vmrun %rax
 
 2:	cli
 
 	/* Pop @svm to RDI, guest registers have been saved already. */
-	pop %_ASM_DI
+	pop %rdi
 
 #ifdef CONFIG_RETPOLINE
 	/* IMPORTANT: Stuff the RSB immediately after VM-Exit, before RET! */
-	FILL_RETURN_BUFFER %_ASM_AX, RSB_CLEAR_LOOPS, X86_FEATURE_RETPOLINE
+	FILL_RETURN_BUFFER %rax, RSB_CLEAR_LOOPS, X86_FEATURE_RETPOLINE
 #endif
 
 	/* Clobbers RAX, RCX, RDX.  */
@@ -361,20 +354,15 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
 	UNTRAIN_RET
 
 	/* "Pop" @spec_ctrl_intercepted.  */
-	pop %_ASM_BX
+	pop %rbx
 
-	pop %_ASM_BX
+	pop %rbx
 
-#ifdef CONFIG_X86_64
 	pop %r12
 	pop %r13
 	pop %r14
 	pop %r15
-#else
-	pop %esi
-	pop %edi
-#endif
-	pop %_ASM_BP
+	pop %rbp
 	RET
 
 	RESTORE_GUEST_SPEC_CTRL_BODY
@@ -387,3 +375,4 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
 	_ASM_EXTABLE(1b, 3b)
 
 SYM_FUNC_END(__svm_sev_es_vcpu_run)
+#endif

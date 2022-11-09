@@ -300,7 +300,7 @@ struct svm_cpu_data {
 	u32 min_asid;
 	struct kvm_ldttss_desc *tss_desc;
 
-	struct page *save_area;
+	struct vmcb *save_area;
 	unsigned long save_area_pa;
 
 	struct vmcb *current_vmcb;

@@ -170,7 +170,245 @@ static void kvm_xen_init_timer(struct kvm_vcpu *vcpu)
 	vcpu->arch.xen.timer.function = xen_timer_callback;
 }
 
-static void kvm_xen_update_runstate(struct kvm_vcpu *v, int state)
+static void kvm_xen_update_runstate_guest(struct kvm_vcpu *v, bool atomic)
+{
+	struct kvm_vcpu_xen *vx = &v->arch.xen;
+	struct gfn_to_pfn_cache *gpc1 = &vx->runstate_cache;
+	struct gfn_to_pfn_cache *gpc2 = &vx->runstate2_cache;
+	size_t user_len, user_len1, user_len2;
+	struct vcpu_runstate_info rs;
+	int *rs_state = &rs.state;
+	unsigned long flags;
+	size_t times_ofs;
+	u8 *update_bit;
+
+	/*
+	 * The only difference between 32-bit and 64-bit versions of the
+	 * runstate struct is the alignment of uint64_t in 32-bit, which
+	 * means that the 64-bit version has an additional 4 bytes of
+	 * padding after the first field 'state'.
+	 */
+	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state) != 0);
+	BUILD_BUG_ON(offsetof(struct compat_vcpu_runstate_info, state) != 0);
+	BUILD_BUG_ON(sizeof(struct compat_vcpu_runstate_info) != 0x2c);
+#ifdef CONFIG_X86_64
+	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state_entry_time) !=
+		     offsetof(struct compat_vcpu_runstate_info, state_entry_time) + 4);
+	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, time) !=
+		     offsetof(struct compat_vcpu_runstate_info, time) + 4);
+#endif
+
+	if (IS_ENABLED(CONFIG_64BIT) && v->kvm->arch.xen.long_mode) {
+		user_len = sizeof(struct vcpu_runstate_info);
+		times_ofs = offsetof(struct vcpu_runstate_info,
+				     state_entry_time);
+#ifdef CONFIG_X86_64
+		/*
+		 * Don't leak kernel memory through the padding in the 64-bit
+		 * struct if we take the split-page path.
+		 */
+		memset(&rs, 0, offsetof(struct vcpu_runstate_info, state_entry_time));
+#endif
+	} else {
+		user_len = sizeof(struct compat_vcpu_runstate_info);
+		times_ofs = offsetof(struct compat_vcpu_runstate_info,
+				     state_entry_time);
+		/* Start of struct for compat mode (qv). */
+		rs_state++;
+	}
+
+	/*
+	 * There are basically no alignment constraints. The guest can set it
+	 * up so it crosses from one page to the next, and at arbitrary byte
+	 * alignment (and the 32-bit ABI doesn't align the 64-bit integers
+	 * anyway, even if the overall struct had been 64-bit aligned).
+	 */
+	if ((gpc1->gpa & ~PAGE_MASK) + user_len >= PAGE_SIZE) {
+		user_len1 = PAGE_SIZE - (gpc1->gpa & ~PAGE_MASK);
+		user_len2 = user_len - user_len1;
+	} else {
+		user_len1 = user_len;
+		user_len2 = 0;
+	}
+	BUG_ON(user_len1 + user_len2 != user_len);
+
+ retry:
+	/*
+	 * Attempt to obtain the GPC lock on *both* (if there are two)
+	 * gfn_to_pfn caches that cover the region.
+	 */
+	read_lock_irqsave(&gpc1->lock, flags);
+	while (!kvm_gfn_to_pfn_cache_check(v->kvm, gpc1, gpc1->gpa, user_len1)) {
+		read_unlock_irqrestore(&gpc1->lock, flags);
+
+		/* When invoked from kvm_sched_out() we cannot sleep */
+		if (atomic)
+			return;
+
+		if (kvm_gfn_to_pfn_cache_refresh(v->kvm, gpc1, gpc1->gpa, user_len1))
+			return;
+
+		read_lock_irqsave(&gpc1->lock, flags);
+	}
+
+	/*
+	 * The common case is that it all fits on a page and we can
+	 * just do it the simple way.
+	 */
+	if (likely(!user_len2)) {
+		/*
+		 * We use 'int *user_state' to point to the state field, and
+		 * 'u64 *user_times' for runstate_entry_time. So the actual
+		 * array of time[] in each state starts at user_times[1].
+		 */
+		int *user_state = gpc1->khva;
+		u64 *user_times = gpc1->khva + times_ofs;
+
+		/*
+		 * The XEN_RUNSTATE_UPDATE bit is the top bit of the state_entry_time
+		 * field. We need to set it (and write-barrier) before writing to the
+		 * the rest of the structure, and clear it last. Just as Xen does, we
+		 * address the single *byte* in which it resides because it might be
+		 * in a different cache line to the rest of the 64-bit word, due to
+		 * the (lack of) alignment constraints.
+		 */
+		BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, state_entry_time) !=
+			     sizeof(uint64_t));
+		BUILD_BUG_ON(sizeof_field(struct compat_vcpu_runstate_info, state_entry_time) !=
+			     sizeof(uint64_t));
+		BUILD_BUG_ON((XEN_RUNSTATE_UPDATE >> 56) != 0x80);
+
+		update_bit = ((u8 *)(&user_times[1])) - 1;
+		*update_bit = (vx->runstate_entry_time | XEN_RUNSTATE_UPDATE) >> 56;
+		smp_wmb();
+
+		/*
+		 * Next, write the new runstate. This is in the *same* place
+		 * for 32-bit and 64-bit guests, asserted here for paranoia.
+		 */
+		BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state) !=
+			     offsetof(struct compat_vcpu_runstate_info, state));
+		BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, state) !=
+			     sizeof(vx->current_runstate));
+		BUILD_BUG_ON(sizeof_field(struct compat_vcpu_runstate_info, state) !=
+			     sizeof(vx->current_runstate));
+		*user_state = vx->current_runstate;
+
+		/*
+		 * Then the actual runstate_entry_time (with the UPDATE bit
+		 * still set).
+		 */
+		*user_times = vx->runstate_entry_time | XEN_RUNSTATE_UPDATE;
+
+		/*
+		 * Write the actual runstate times immediately after the
+		 * runstate_entry_time.
+		 */
+		BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state_entry_time) !=
+			     offsetof(struct vcpu_runstate_info, time) - sizeof(u64));
+		BUILD_BUG_ON(offsetof(struct compat_vcpu_runstate_info, state_entry_time) !=
+			     offsetof(struct compat_vcpu_runstate_info, time) - sizeof(u64));
+		BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, time) !=
+			     sizeof_field(struct compat_vcpu_runstate_info, time));
+		BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, time) !=
+			     sizeof(vx->runstate_times));
+		memcpy(user_times + 1, vx->runstate_times, sizeof(vx->runstate_times));
+
+		smp_wmb();
+
+		/*
+		 * Finally, clear the 'updating' bit. Don't use &= here because
+		 * the compiler may not realise that update_bit and user_times
+		 * point to the same place. That's a classic pointer-aliasing
+		 * problem.
+		 */
+		*update_bit = vx->runstate_entry_time >> 56;
+		smp_wmb();
+
+		goto done_1;
+	}
+
+	/*
+	 * The painful code path. It's split across two pages and we need to
+	 * hold and validate both GPCs simultaneously. Thankfully we can get
+	 * away with declaring a lock ordering GPC1 > GPC2 because nothing
+	 * else takes them more than one at a time.
+	 */
+	read_lock(&gpc2->lock);
+
+	if (!kvm_gfn_to_pfn_cache_check(v->kvm, gpc2, gpc2->gpa, user_len2)) {
+		read_unlock(&gpc2->lock);
+		read_unlock_irqrestore(&gpc1->lock, flags);
+
+		/* When invoked from kvm_sched_out() we cannot sleep */
+		if (atomic)
+			return;
+
+		/*
+		 * Use kvm_gpc_activate() here because if the runstate
+		 * area was configured in 32-bit mode and only extends
+		 * to the second page now because the guest changed to
+		 * 64-bit mode, the second GPC won't have been set up.
+		 */
+		if (kvm_gpc_activate(v->kvm, gpc2, NULL, KVM_HOST_USES_PFN,
+				     gpc1->gpa + user_len1, user_len2))
+			return;
+
+		/*
+		 * We dropped the lock on GPC1 so we have to go all the way
+		 * back and revalidate that too.
+		 */
+		goto retry;
+	}
+
+	/*
+	 * Work out where the byte containing the XEN_RUNSTATE_UPDATE bit is.
+	 */
+	if (user_len1 >= times_ofs + sizeof(uint64_t))
+		update_bit = ((u8 *)gpc1->khva) + times_ofs + sizeof(u64) - 1;
+	else
+		update_bit = ((u8 *)gpc2->khva) + times_ofs + sizeof(u64) - 1 -
+			user_len1;
+
+	/*
+	 * Create a structure on our stack with everything in the right place.
+	 * The rs_state pointer points to the start of it, which in the case
+	 * of a compat guest on a 64-bit host is the 32 bit field that the
+	 * compiler thinks is padding.
+	 */
+	*rs_state = vx->current_runstate;
+	rs.state_entry_time = vx->runstate_entry_time | XEN_RUNSTATE_UPDATE;
+	memcpy(rs.time, vx->runstate_times, sizeof(vx->runstate_times));
+
+	*update_bit = rs.state_entry_time >> 56;
+	smp_wmb();
+
+	/*
+	 * Having constructed the structure starting at *rs_state, copy it
+	 * into the first and second pages as appropriate using user_len1
+	 * and user_len2.
+	 */
+	memcpy(gpc1->khva, rs_state, user_len1);
+	memcpy(gpc2->khva, ((u8 *)rs_state) + user_len1, user_len2);
+	smp_wmb();
+
+	/*
+	 * Finally, clear the XEN_RUNSTATE_UPDATE bit.
+	 */
+	*update_bit = vx->runstate_entry_time >> 56;
+	smp_wmb();
+
+	if (user_len2)
+		read_unlock(&gpc2->lock);
+ done_1:
+	read_unlock_irqrestore(&gpc1->lock, flags);
+
+	mark_page_dirty_in_slot(v->kvm, gpc1->memslot, gpc1->gpa >> PAGE_SHIFT);
+	if (user_len2)
+		mark_page_dirty_in_slot(v->kvm, gpc2->memslot, gpc2->gpa >> PAGE_SHIFT);
+}
+
+void kvm_xen_update_runstate(struct kvm_vcpu *v, int state)
 {
 	struct kvm_vcpu_xen *vx = &v->arch.xen;
 	u64 now = get_kvmclock_ns(v->kvm);
@@ -196,122 +434,9 @@ static void kvm_xen_update_runstate(struct kvm_vcpu *v, int state)
 	vx->runstate_times[vx->current_runstate] += delta_ns;
 	vx->current_runstate = state;
 	vx->runstate_entry_time = now;
-}
 
-void kvm_xen_update_runstate_guest(struct kvm_vcpu *v, int state)
-{
-	struct kvm_vcpu_xen *vx = &v->arch.xen;
-	struct gfn_to_pfn_cache *gpc = &vx->runstate_cache;
-	uint64_t *user_times;
-	unsigned long flags;
-	size_t user_len;
-	int *user_state;
-
-	kvm_xen_update_runstate(v, state);
-
-	if (!vx->runstate_cache.active)
-		return;
-
-	if (IS_ENABLED(CONFIG_64BIT) && v->kvm->arch.xen.long_mode)
-		user_len = sizeof(struct vcpu_runstate_info);
-	else
-		user_len = sizeof(struct compat_vcpu_runstate_info);
-
-	read_lock_irqsave(&gpc->lock, flags);
-	while (!kvm_gfn_to_pfn_cache_check(v->kvm, gpc, gpc->gpa,
-					   user_len)) {
-		read_unlock_irqrestore(&gpc->lock, flags);
-
-		/* When invoked from kvm_sched_out() we cannot sleep */
-		if (state == RUNSTATE_runnable)
-			return;
-
-		if (kvm_gfn_to_pfn_cache_refresh(v->kvm, gpc, gpc->gpa, user_len))
-			return;
-
-		read_lock_irqsave(&gpc->lock, flags);
-	}
-
-	/*
-	 * The only difference between 32-bit and 64-bit versions of the
-	 * runstate struct us the alignment of uint64_t in 32-bit, which
-	 * means that the 64-bit version has an additional 4 bytes of
-	 * padding after the first field 'state'.
-	 *
-	 * So we use 'int __user *user_state' to point to the state field,
-	 * and 'uint64_t __user *user_times' for runstate_entry_time. So
-	 * the actual array of time[] in each state starts at user_times[1].
-	 */
-	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state) != 0);
-	BUILD_BUG_ON(offsetof(struct compat_vcpu_runstate_info, state) != 0);
-	BUILD_BUG_ON(sizeof(struct compat_vcpu_runstate_info) != 0x2c);
-#ifdef CONFIG_X86_64
-	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state_entry_time) !=
-		     offsetof(struct compat_vcpu_runstate_info, state_entry_time) + 4);
-	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, time) !=
-		     offsetof(struct compat_vcpu_runstate_info, time) + 4);
-#endif
-
-	user_state = gpc->khva;
-
-	if (IS_ENABLED(CONFIG_64BIT) && v->kvm->arch.xen.long_mode)
-		user_times = gpc->khva + offsetof(struct vcpu_runstate_info,
-						  state_entry_time);
-	else
-		user_times = gpc->khva + offsetof(struct compat_vcpu_runstate_info,
-						  state_entry_time);
-
-	/*
-	 * First write the updated state_entry_time at the appropriate
-	 * location determined by 'offset'.
-	 */
-	BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, state_entry_time) !=
-		     sizeof(user_times[0]));
-	BUILD_BUG_ON(sizeof_field(struct compat_vcpu_runstate_info, state_entry_time) !=
-		     sizeof(user_times[0]));
-
-	user_times[0] = vx->runstate_entry_time | XEN_RUNSTATE_UPDATE;
-	smp_wmb();
-
-	/*
-	 * Next, write the new runstate. This is in the *same* place
-	 * for 32-bit and 64-bit guests, asserted here for paranoia.
-	 */
-	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state) !=
-		     offsetof(struct compat_vcpu_runstate_info, state));
-	BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, state) !=
-		     sizeof(vx->current_runstate));
-	BUILD_BUG_ON(sizeof_field(struct compat_vcpu_runstate_info, state) !=
-		     sizeof(vx->current_runstate));
-
-	*user_state = vx->current_runstate;
-
-	/*
-	 * Write the actual runstate times immediately after the
-	 * runstate_entry_time.
-	 */
-	BUILD_BUG_ON(offsetof(struct vcpu_runstate_info, state_entry_time) !=
-		     offsetof(struct vcpu_runstate_info, time) - sizeof(u64));
-	BUILD_BUG_ON(offsetof(struct compat_vcpu_runstate_info, state_entry_time) !=
-		     offsetof(struct compat_vcpu_runstate_info, time) - sizeof(u64));
-	BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, time) !=
-		     sizeof_field(struct compat_vcpu_runstate_info, time));
-	BUILD_BUG_ON(sizeof_field(struct vcpu_runstate_info, time) !=
-		     sizeof(vx->runstate_times));
-
-	memcpy(user_times + 1, vx->runstate_times, sizeof(vx->runstate_times));
-	smp_wmb();
-
-	/*
-	 * Finally, clear the XEN_RUNSTATE_UPDATE bit in the guest's
-	 * runstate_entry_time field.
-	 */
-	user_times[0] &= ~XEN_RUNSTATE_UPDATE;
-	smp_wmb();
-
-	read_unlock_irqrestore(&gpc->lock, flags);
-
-	mark_page_dirty_in_slot(v->kvm, gpc->memslot, gpc->gpa >> PAGE_SHIFT);
+	if (vx->runstate_cache.active)
+		kvm_xen_update_runstate_guest(v, state == RUNSTATE_runnable);
 }
 
 static void kvm_xen_inject_vcpu_vector(struct kvm_vcpu *v)
@@ -584,23 +709,57 @@ int kvm_xen_vcpu_set_attr(struct kvm_vcpu *vcpu, struct kvm_xen_vcpu_attr *data)
 			kvm_make_request(KVM_REQ_CLOCK_UPDATE, vcpu);
 		break;
 
-	case KVM_XEN_VCPU_ATTR_TYPE_RUNSTATE_ADDR:
+	case KVM_XEN_VCPU_ATTR_TYPE_RUNSTATE_ADDR: {
+		size_t sz, sz1, sz2;
+
 		if (!sched_info_on()) {
 			r = -EOPNOTSUPP;
 			break;
 		}
 		if (data->u.gpa == GPA_INVALID) {
+			r = 0;
+		deactivate_out:
 			kvm_gpc_deactivate(vcpu->kvm,
 					   &vcpu->arch.xen.runstate_cache);
-			r = 0;
+			kvm_gpc_deactivate(vcpu->kvm,
+					   &vcpu->arch.xen.runstate2_cache);
 			break;
 		}
 
-		r = kvm_gpc_activate(vcpu->kvm, &vcpu->arch.xen.runstate_cache,
-				     NULL, KVM_HOST_USES_PFN, data->u.gpa,
-				     sizeof(struct vcpu_runstate_info));
-		break;
+		/*
+		 * If the guest switches to 64-bit mode after setting the runstate
+		 * address, that's actually OK. kvm_xen_update_runstate_guest()
+		 * will cope.
+		 */
+		if (IS_ENABLED(CONFIG_64BIT) && vcpu->kvm->arch.xen.long_mode)
+			sz = sizeof(struct vcpu_runstate_info);
+		else
+			sz = sizeof(struct compat_vcpu_runstate_info);
 
+		/* How much fits in the (first) page? */
+		sz1 = PAGE_SIZE - (data->u.gpa & ~PAGE_MASK);
+		r = kvm_gpc_activate(vcpu->kvm, &vcpu->arch.xen.runstate_cache,
+				     NULL, KVM_HOST_USES_PFN, data->u.gpa, sz1);
+		if (r)
+			goto deactivate_out;
+
+		/* Either map the second page, or deactivate the second GPC */
+		if (sz1 >= sz) {
+			kvm_gpc_deactivate(vcpu->kvm,
+					   &vcpu->arch.xen.runstate2_cache);
+		} else {
+			sz2 = sz - sz1;
+			BUG_ON((data->u.gpa + sz1) & ~PAGE_MASK);
+			r = kvm_gpc_activate(vcpu->kvm, &vcpu->arch.xen.runstate2_cache,
+					     NULL, KVM_HOST_USES_PFN,
+					     data->u.gpa + sz1, sz2);
+			if (r)
+				goto deactivate_out;
+		}
+
+		kvm_xen_update_runstate_guest(vcpu, false);
+		break;
+	}
 	case KVM_XEN_VCPU_ATTR_TYPE_RUNSTATE_CURRENT:
 		if (!sched_info_on()) {
 			r = -EOPNOTSUPP;
@@ -1834,6 +1993,7 @@ void kvm_xen_init_vcpu(struct kvm_vcpu *vcpu)
 	timer_setup(&vcpu->arch.xen.poll_timer, cancel_evtchn_poll, 0);
 
 	kvm_gpc_init(&vcpu->arch.xen.runstate_cache);
+	kvm_gpc_init(&vcpu->arch.xen.runstate2_cache);
 	kvm_gpc_init(&vcpu->arch.xen.vcpu_info_cache);
 	kvm_gpc_init(&vcpu->arch.xen.vcpu_time_info_cache);
 }
@@ -1844,6 +2004,7 @@ void kvm_xen_destroy_vcpu(struct kvm_vcpu *vcpu)
 		kvm_xen_stop_timer(vcpu);
 
 	kvm_gpc_deactivate(vcpu->kvm, &vcpu->arch.xen.runstate_cache);
+	kvm_gpc_deactivate(vcpu->kvm, &vcpu->arch.xen.runstate2_cache);
 	kvm_gpc_deactivate(vcpu->kvm, &vcpu->arch.xen.vcpu_info_cache);
 	kvm_gpc_deactivate(vcpu->kvm, &vcpu->arch.xen.vcpu_time_info_cache);
 

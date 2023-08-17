@@ -48,3 +48,15 @@ have the same physical APIC ID, KVM will deliver events targeting that APIC ID
 only to the vCPU with the lowest vCPU ID.  If KVM_X2APIC_API_USE_32BIT_IDS is
 not enabled, KVM follows x86 architecture when processing interrupts (all vCPUs
 matching the target APIC ID receive the interrupt).
+
+``KVM_SET_VCPU_EVENTS`` issue
+-----------------------------
+
+Invalid KVM_SET_VCPU_EVENTS input with respect to error codes *may* result in
+failed VM-Entry on Intel CPUs.  Pre-CET Intel CPUs require that exception
+injection through the VMCS correctly set the "error code valid" flag, e.g.
+require the flag be set when injecting a #GP, clear when injecting a #UD,
+clear when injecting a soft exception, etc.  Intel CPUs that enumerate
+IA32_VMX_BASIC[56] as '1' relax VMX's consistency checks, and AMD CPUs have no
+restrictions whatsoever.  KVM_SET_VCPU_EVENTS doesn't sanity check the vector
+versus "has_error_code", i.e. KVM's ABI follows AMD behavior.

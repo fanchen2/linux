@@ -17,6 +17,12 @@
 /* Guest payload for any performance counter counting */
 #define NUM_BRANCHES		10
 
+/*
+ * KVM implements the first two non-existent counters (MSR_P6_PERFCTRx)
+ * via kvm_pr_unimpl_wrmsr() instead of #GP.
+ */
+#define MSR_INTEL_ARCH_PMU_GPCTR (MSR_IA32_PERFCTR0 + 2)
+
 static const uint64_t perf_caps[] = {
 	0,
 	PMU_CAP_FW_WRITES,
@@ -374,6 +380,59 @@ static void test_fixed_counters(void)
 			__test_fixed_counters(ecx, edx);
 }
 
+static void pmu_version_guest_code(void)
+{
+	uint8_t pmu_version = this_cpu_property(X86_PROPERTY_PMU_VERSION);
+
+	switch (pmu_version) {
+	case 0:
+		GUEST_ASSERT_EQ(wrmsr_safe(MSR_INTEL_ARCH_PMU_GPCTR, 0xffffull),
+				GP_VECTOR);
+	case 1:
+		GUEST_ASSERT_EQ(wrmsr_safe(MSR_CORE_PERF_GLOBAL_CTRL, 0x1ull),
+				GP_VECTOR);
+	case 2:
+		/*
+		 * AnyThread Bit is only supported in version 3
+		 *
+		 * The strange thing is that when version=0, writing ANY-Any
+		 * Thread bit (bit 21) in MSR_P6_EVNTSEL0 and MSR_P6_EVNTSEL1
+		 * will not generate #GP. While writing ANY-Any Thread bit
+		 * (bit 21) in MSR_P6_EVNTSEL0+x (MAX_GP_CTR_NUM > x > 2) to
+		 * ANY-Any Thread bit (bit 21) will generate #GP.
+		 */
+		if (pmu_version == 0)
+			break;
+
+		GUEST_ASSERT_EQ(wrmsr_safe(MSR_P6_EVNTSEL0, ARCH_PERFMON_EVENTSEL_ANY),
+				GP_VECTOR);
+		break;
+	default:
+		/* KVM currently supports up to pmu version 2 */
+		GUEST_DONE();
+	}
+
+	GUEST_DONE();
+}
+
+static void test_intel_pmu_version(void)
+{
+	uint8_t unsupported_version = kvm_cpu_property(X86_PROPERTY_PMU_VERSION) + 1;
+	struct kvm_vcpu *vcpu;
+	struct kvm_vm *vm;
+	uint8_t version;
+
+	TEST_REQUIRE(kvm_cpu_property(X86_PROPERTY_PMU_NR_FIXED_COUNTERS) > 2);
+
+	for (version = 0; version <= unsupported_version; version++) {
+		vm = pmu_vm_create_with_one_vcpu(&vcpu, pmu_version_guest_code);
+		vcpu_set_cpuid_property(vcpu, X86_PROPERTY_PMU_VERSION, version);
+		run_vcpu(vcpu);
+
+		kvm_vm_free(vm);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	TEST_REQUIRE(get_kvm_param_bool("enable_pmu"));
@@ -386,6 +445,7 @@ int main(int argc, char *argv[])
 	test_intel_arch_events();
 	test_intel_counters_num();
 	test_fixed_counters();
+	test_intel_pmu_version();
 
 	return 0;
 }

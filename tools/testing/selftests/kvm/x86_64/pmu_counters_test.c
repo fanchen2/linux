@@ -17,6 +17,11 @@
 /* Guest payload for any performance counter counting */
 #define NUM_BRANCHES		10
 
+static const uint64_t perf_caps[] = {
+	0,
+	PMU_CAP_FW_WRITES,
+};
+
 static struct kvm_vm *pmu_vm_create_with_one_vcpu(struct kvm_vcpu **vcpu,
 						  void *guest_code)
 {
@@ -209,6 +214,85 @@ static void test_intel_arch_events(void)
 	}
 }
 
+static void __guest_wrmsr_rdmsr(uint32_t counter_msr, uint8_t nr_msrs,
+				bool expect_gp)
+{
+	uint64_t msr_val;
+	uint8_t vector;
+
+	vector = wrmsr_safe(counter_msr + nr_msrs, 0xffff);
+	__GUEST_ASSERT(expect_gp ? vector == GP_VECTOR : !vector,
+		       "Expected GP_VECTOR");
+
+	vector = rdmsr_safe(counter_msr + nr_msrs, &msr_val);
+	__GUEST_ASSERT(expect_gp ? vector == GP_VECTOR : !vector,
+		       "Expected GP_VECTOR");
+
+	if (!expect_gp)
+		GUEST_ASSERT_EQ(msr_val, 0);
+
+	GUEST_DONE();
+}
+
+static void guest_rd_wr_gp_counter(void)
+{
+	uint8_t nr_gp_counters = this_cpu_property(X86_PROPERTY_PMU_NR_GP_COUNTERS);
+	uint64_t perf_capabilities = rdmsr(MSR_IA32_PERF_CAPABILITIES);
+	uint32_t counter_msr;
+	bool expect_gp = true;
+
+	if (perf_capabilities & PMU_CAP_FW_WRITES) {
+		counter_msr = MSR_IA32_PMC0;
+	} else {
+		counter_msr = MSR_IA32_PERFCTR0;
+
+		/* KVM drops writes to MSR_P6_PERFCTR[0|1]. */
+		if (nr_gp_counters == 0)
+			expect_gp = false;
+	}
+
+	__guest_wrmsr_rdmsr(counter_msr, nr_gp_counters, expect_gp);
+}
+
+/* Access the first out-of-range counter register to trigger #GP */
+static void test_oob_gp_counter(uint8_t eax_gp_num, uint64_t perf_cap)
+{
+	struct kvm_vcpu *vcpu;
+	struct kvm_vm *vm;
+
+	vm = pmu_vm_create_with_one_vcpu(&vcpu, guest_rd_wr_gp_counter);
+
+	vcpu_set_cpuid_property(vcpu, X86_PROPERTY_PMU_NR_GP_COUNTERS,
+				eax_gp_num);
+	vcpu_set_msr(vcpu, MSR_IA32_PERF_CAPABILITIES, perf_cap);
+
+	run_vcpu(vcpu);
+
+	kvm_vm_free(vm);
+}
+
+static void test_intel_counters_num(void)
+{
+	uint8_t nr_gp_counters = kvm_cpu_property(X86_PROPERTY_PMU_NR_GP_COUNTERS);
+	unsigned int i;
+
+	TEST_REQUIRE(nr_gp_counters > 2);
+
+	for (i = 0; i < ARRAY_SIZE(perf_caps); i++) {
+		/*
+		 * For compatibility reasons, KVM does not emulate #GP
+		 * when MSR_P6_PERFCTR[0|1] is not present, but it doesn't
+		 * affect checking the presence of MSR_IA32_PMCx with #GP.
+		 */
+		test_oob_gp_counter(0, perf_caps[i]);
+		test_oob_gp_counter(2, perf_caps[i]);
+		test_oob_gp_counter(nr_gp_counters, perf_caps[i]);
+
+		/* KVM doesn't emulate more counters than it can support. */
+		test_oob_gp_counter(nr_gp_counters + 1, perf_caps[i]);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	TEST_REQUIRE(get_kvm_param_bool("enable_pmu"));
@@ -219,6 +303,7 @@ int main(int argc, char *argv[])
 	TEST_REQUIRE(kvm_cpu_has(X86_FEATURE_PDCM));
 
 	test_intel_arch_events();
+	test_intel_counters_num();
 
 	return 0;
 }

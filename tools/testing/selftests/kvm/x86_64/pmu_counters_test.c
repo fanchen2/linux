@@ -271,8 +271,32 @@ static void test_oob_gp_counter(uint8_t eax_gp_num, uint64_t perf_cap)
 	kvm_vm_free(vm);
 }
 
+static void guest_rd_wr_fixed_counter(void)
+{
+	uint8_t nr_fixed_counters = this_cpu_property(X86_PROPERTY_PMU_NR_FIXED_COUNTERS);
+
+	__guest_wrmsr_rdmsr(MSR_CORE_PERF_FIXED_CTR0, nr_fixed_counters, true);
+}
+
+static void test_oob_fixed_ctr(uint8_t edx_fixed_num)
+{
+	struct kvm_vcpu *vcpu;
+	struct kvm_vm *vm;
+
+	vm = pmu_vm_create_with_one_vcpu(&vcpu, guest_rd_wr_fixed_counter);
+
+	vcpu_set_cpuid_property(vcpu, X86_PROPERTY_PMU_FIXED_COUNTERS_BITMASK, 0);
+	vcpu_set_cpuid_property(vcpu, X86_PROPERTY_PMU_NR_FIXED_COUNTERS,
+				edx_fixed_num);
+
+	run_vcpu(vcpu);
+
+	kvm_vm_free(vm);
+}
+
 static void test_intel_counters_num(void)
 {
+	uint8_t nr_fixed_counters = kvm_cpu_property(X86_PROPERTY_PMU_NR_FIXED_COUNTERS);
 	uint8_t nr_gp_counters = kvm_cpu_property(X86_PROPERTY_PMU_NR_GP_COUNTERS);
 	unsigned int i;
 
@@ -291,6 +315,10 @@ static void test_intel_counters_num(void)
 		/* KVM doesn't emulate more counters than it can support. */
 		test_oob_gp_counter(nr_gp_counters + 1, perf_caps[i]);
 	}
+
+	test_oob_fixed_ctr(0);
+	test_oob_fixed_ctr(nr_fixed_counters);
+	test_oob_fixed_ctr(nr_fixed_counters + 1);
 }
 
 int main(int argc, char *argv[])

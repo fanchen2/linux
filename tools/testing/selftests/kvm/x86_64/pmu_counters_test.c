@@ -321,6 +321,59 @@ static void test_intel_counters_num(void)
 	test_oob_fixed_ctr(nr_fixed_counters + 1);
 }
 
+static void fixed_counters_guest_code(void)
+{
+	uint64_t supported_bitmask = this_cpu_property(X86_PROPERTY_PMU_FIXED_COUNTERS_BITMASK);
+	uint32_t nr_fixed_counter = this_cpu_property(X86_PROPERTY_PMU_NR_FIXED_COUNTERS);
+	uint64_t msr_val;
+	unsigned int i;
+	bool expected;
+
+	for (i = 0; i < nr_fixed_counter; i++) {
+		expected = supported_bitmask & BIT_ULL(i) || i < nr_fixed_counter;
+
+		wrmsr_safe(MSR_CORE_PERF_FIXED_CTR0 + i, 0);
+		wrmsr_safe(MSR_CORE_PERF_FIXED_CTR_CTRL, BIT_ULL(4 * i));
+		wrmsr_safe(MSR_CORE_PERF_GLOBAL_CTRL, BIT_ULL(PMC_IDX_FIXED + i));
+		__asm__ __volatile__("loop ." : "+c"((int){NUM_BRANCHES}));
+		wrmsr_safe(MSR_CORE_PERF_GLOBAL_CTRL, 0);
+		rdmsr_safe(MSR_CORE_PERF_FIXED_CTR0 + i, &msr_val);
+
+		GUEST_ASSERT_EQ(expected, !!msr_val);
+	}
+
+	GUEST_DONE();
+}
+
+static void __test_fixed_counters(uint32_t fixed_bitmask, uint8_t edx_fixed_num)
+{
+	struct kvm_vcpu *vcpu;
+	struct kvm_vm *vm;
+
+	vm = pmu_vm_create_with_one_vcpu(&vcpu, fixed_counters_guest_code);
+
+	vcpu_set_cpuid_property(vcpu, X86_PROPERTY_PMU_FIXED_COUNTERS_BITMASK,
+				fixed_bitmask);
+	vcpu_set_cpuid_property(vcpu, X86_PROPERTY_PMU_NR_FIXED_COUNTERS,
+				edx_fixed_num);
+
+	run_vcpu(vcpu);
+
+	kvm_vm_free(vm);
+}
+
+static void test_fixed_counters(void)
+{
+	uint8_t nr_fixed_counters = kvm_cpu_property(X86_PROPERTY_PMU_NR_FIXED_COUNTERS);
+	uint32_t ecx;
+	uint8_t edx;
+
+	for (edx = 0; edx <= nr_fixed_counters; edx++)
+		/* KVM doesn't emulate more fixed counters than it can support. */
+		for (ecx = 0; ecx <= (BIT_ULL(nr_fixed_counters) - 1); ecx++)
+			__test_fixed_counters(ecx, edx);
+}
+
 int main(int argc, char *argv[])
 {
 	TEST_REQUIRE(get_kvm_param_bool("enable_pmu"));
@@ -332,6 +385,7 @@ int main(int argc, char *argv[])
 
 	test_intel_arch_events();
 	test_intel_counters_num();
+	test_fixed_counters();
 
 	return 0;
 }

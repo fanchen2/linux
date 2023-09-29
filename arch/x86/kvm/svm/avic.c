@@ -310,7 +310,20 @@ static int avic_init_backing_page(struct kvm_vcpu *vcpu)
 		    AVIC_PHYSICAL_ID_ENTRY_VALID_MASK;
 	WRITE_ONCE(table[id], new_entry);
 
-	svm->avic_physical_id_entry = &table[id];
+	/*
+	 * IPI virtualization is bundled with AVIC, but effectively can be
+	 * disabled simply by never marking vCPUs as running in the physical ID
+	 * table.  Use a dummy entry to avoid conditionals in the runtime code,
+	 * and to keep the IOMMU coordination logic as simple as possible.  The
+	 * entry in the table also needs to be valid (see above), otherwise KVM
+	 * will ignore IPIs due to thinking the target doesn't exist.
+	 */
+	if (enable_ipiv) {
+		svm->avic_physical_id_entry = &table[id];
+	} else {
+		svm->ipiv_disabled_backing_entry = table[id];
+		svm->avic_physical_id_entry = &svm->ipiv_disabled_backing_entry;
+	}
 
 	return 0;
 }

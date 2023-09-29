@@ -264,6 +264,7 @@ struct vcpu_svm {
 
 	u32 ldr_reg;
 	u32 dfr_reg;
+	u64 ipiv_disabled_backing_entry;
 	u64 *avic_physical_id_entry;
 
 	/*

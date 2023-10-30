@@ -2121,12 +2121,13 @@ int kvm_set_internal_memslot(struct kvm *kvm,
 }
 EXPORT_SYMBOL_GPL(kvm_set_internal_memslot);
 
-static int kvm_vm_ioctl_set_memory_region(struct kvm *kvm,
+static int kvm_vm_ioctl_set_memory_region(struct kvm *kvm, unsigned int ioctl,
 					  struct kvm_userspace_memory_region2 *mem)
 {
 	u32 valid_flags = KVM_MEM_LOG_DIRTY_PAGES;
 
-	if (kvm_arch_has_private_mem(kvm))
+	if (ioctl == KVM_SET_USER_MEMORY_REGION2 &&
+	    kvm_arch_has_private_mem(kvm))
 		valid_flags |= KVM_MEM_PRIVATE;
 
 	/* Dirty logging private memory is not currently supported. */
@@ -5138,7 +5139,7 @@ static long kvm_vm_ioctl(struct file *filp,
 		if (copy_from_user(&mem, argp, size))
 			goto out;
 
-		r = kvm_vm_ioctl_set_memory_region(kvm, &mem);
+		r = kvm_vm_ioctl_set_memory_region(kvm, ioctl, &mem);
 		break;
 	}
 	case KVM_GET_DIRTY_LOG: {

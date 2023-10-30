@@ -5129,10 +5129,18 @@ static long kvm_vm_ioctl(struct file *filp,
 		struct kvm_userspace_memory_region2 mem;
 		unsigned long size;
 
-		if (ioctl == KVM_SET_USER_MEMORY_REGION)
+		if (ioctl == KVM_SET_USER_MEMORY_REGION) {
 			size = sizeof(struct kvm_userspace_memory_region);
-		else
+
+			/*
+			 * Prevent KVM from consuming random stack data, e.g.
+			 * if there is a bug where KVM consumes fields that are
+			 * supposed to be available only with version 2.
+			 */
+			memset(&mem, -1, sizeof(mem) - size);
+		} else {
 			size = sizeof(struct kvm_userspace_memory_region2);
+		}
 
 		/* Ensure the common parts of the two structs are identical. */
 		SANITY_CHECK_MEM_REGION_FIELD(slot);

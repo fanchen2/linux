@@ -727,6 +727,9 @@ static inline bool cpl_is_matched(struct kvm_pmc *pmc)
 		select_user = config & 0x2;
 	}
 
+	if (select_os && select_user)
+		return true;
+
 	return (static_call(kvm_x86_get_cpl)(pmc->vcpu) == 0) ? select_os : select_user;
 }
 

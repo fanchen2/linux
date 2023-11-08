@@ -18,6 +18,8 @@
 #define VMWARE_BACKDOOR_PMC_REAL_TIME		0x10001
 #define VMWARE_BACKDOOR_PMC_APPARENT_TIME	0x10002
 
+#define KVM_FIXED_PMC_BASE_IDX INTEL_PMC_IDX_FIXED
+
 struct kvm_pmu_emulated_event_selectors {
 	u64 INSTRUCTIONS_RETIRED;
 	u64 BRANCH_INSTRUCTIONS_RETIRED;
@@ -175,7 +177,7 @@ static inline bool pmc_speculative_in_use(struct kvm_pmc *pmc)
 
 	if (pmc_is_fixed(pmc))
 		return fixed_ctrl_field(pmu->fixed_ctr_ctrl,
-					pmc->idx - INTEL_PMC_IDX_FIXED) & 0x3;
+					pmc->idx - KVM_FIXED_PMC_BASE_IDX) & 0x3;
 
 	return pmc->eventsel & ARCH_PERFMON_EVENTSEL_ENABLE;
 }

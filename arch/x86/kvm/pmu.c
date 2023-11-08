@@ -737,14 +737,13 @@ void kvm_pmu_trigger_event(struct kvm_vcpu *vcpu, u64 eventsel)
 	int i;
 
 	for_each_set_bit(i, pmu->all_valid_pmc_idx, X86_PMC_IDX_MAX) {
+		/* Ignore checks for edge detect, pin control, invert and CMASK bits */
 		pmc = kvm_pmc_idx_to_pmc(pmu, i);
-
-		if (!pmc || !pmc_event_is_allowed(pmc))
+		if (!pmc || !pmc_is_eventsel_match(pmc, eventsel) ||
+		    !pmc_event_is_allowed(pmc) || !cpl_is_matched(pmc))
 			continue;
 
-		/* Ignore checks for edge detect, pin control, invert and CMASK bits */
-		if (pmc_is_eventsel_match(pmc, eventsel) && cpl_is_matched(pmc))
-			kvm_pmu_incr_counter(pmc);
+		kvm_pmu_incr_counter(pmc);
 	}
 }
 EXPORT_SYMBOL_GPL(kvm_pmu_trigger_event);

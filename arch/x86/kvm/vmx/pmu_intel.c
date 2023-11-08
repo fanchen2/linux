@@ -405,25 +405,32 @@ static int intel_pmu_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
  * different perf_event is already utilizing the requested counter, but the end
  * result is the same (ignoring the fact that using a general purpose counter
  * will likely exacerbate counter contention).
- *
- * Note, reference cycles is counted using a perf-defined "psuedo-encoding",
- * as there is no architectural general purpose encoding for reference cycles.
  */
 static u64 intel_get_fixed_pmc_eventsel(int index)
 {
-	const struct {
-		u8 eventsel;
-		u8 unit_mask;
-	} fixed_pmc_events[] = {
-		[0] = { 0xc0, 0x00 }, /* Instruction Retired / PERF_COUNT_HW_INSTRUCTIONS. */
-		[1] = { 0x3c, 0x00 }, /* CPU Cycles/ PERF_COUNT_HW_CPU_CYCLES. */
-		[2] = { 0x00, 0x03 }, /* Reference Cycles / PERF_COUNT_HW_REF_CPU_CYCLES*/
+	enum perf_hw_id perf_id;
+	u64 eventsel;
+
+	BUILD_BUG_ON(KVM_PMC_MAX_FIXED != 3);
+
+	switch (index) {
+	case 0:
+		perf_id = PERF_COUNT_HW_INSTRUCTIONS;
+		break;
+	case 1:
+		perf_id = PERF_COUNT_HW_CPU_CYCLES;
+		break;
+	case 2:
+		perf_id = PERF_COUNT_HW_REF_CPU_CYCLES;
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return 0;
 	};
 
-	BUILD_BUG_ON(ARRAY_SIZE(fixed_pmc_events) != KVM_PMC_MAX_FIXED);
-
-	return (fixed_pmc_events[index].unit_mask << 8) |
-		fixed_pmc_events[index].eventsel;
+	eventsel = perf_get_hw_event_config(perf_id);
+	WARN_ON_ONCE(!eventsel && index < kvm_pmu_cap.num_counters_fixed);
+	return eventsel;
 }
 
 static void intel_pmu_refresh(struct kvm_vcpu *vcpu)

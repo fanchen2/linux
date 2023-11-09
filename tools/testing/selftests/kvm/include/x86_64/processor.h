@@ -1153,15 +1153,18 @@ void vm_install_exception_handler(struct kvm_vm *vm, int vector,
  * r9  = exception vector (non-zero)
  * r10 = error code
  */
-#define KVM_ASM_SAFE(insn)					\
+#define __KVM_ASM_SAFE(insn, fep)				\
 	"mov $" __stringify(KVM_EXCEPTION_MAGIC) ", %%r9\n\t"	\
 	"lea 1f(%%rip), %%r10\n\t"				\
 	"lea 2f(%%rip), %%r11\n\t"				\
-	"1: " insn "\n\t"					\
+	fep "1: " insn "\n\t"					\
 	"xor %%r9, %%r9\n\t"					\
 	"2:\n\t"						\
 	"mov  %%r9b, %[vector]\n\t"				\
 	"mov  %%r10, %[error_code]\n\t"
+
+#define KVM_ASM_SAFE(insn) __KVM_ASM_SAFE(insn, "")
+#define KVM_ASM_SAFE_FEP(insn) __KVM_ASM_SAFE(insn, KVM_FEP)
 
 #define KVM_ASM_SAFE_OUTPUTS(v, ec)	[vector] "=qm"(v), [error_code] "=rm"(ec)
 #define KVM_ASM_SAFE_CLOBBERS	"r9", "r10", "r11"
@@ -1207,6 +1210,36 @@ static inline uint8_t rdmsr_safe(uint32_t msr, uint64_t *val)
 static inline uint8_t wrmsr_safe(uint32_t msr, uint64_t val)
 {
 	return kvm_asm_safe("wrmsr", "a"(val & -1u), "d"(val >> 32), "c"(msr));
+}
+
+static inline uint8_t rdpmc_safe(uint32_t msr, uint64_t *val)
+{
+	uint64_t error_code;
+	uint8_t vector;
+	uint32_t a, d;
+
+	asm volatile(KVM_ASM_SAFE("rdpmc")
+		     : "=a"(a), "=d"(d), KVM_ASM_SAFE_OUTPUTS(vector, error_code)
+		     : "c"(msr)
+		     : KVM_ASM_SAFE_CLOBBERS);
+
+	*val = (uint64_t)a | ((uint64_t)d << 32);
+	return vector;
+}
+
+static inline uint8_t rdpmc_safe_fep(uint32_t msr, uint64_t *val)
+{
+	uint64_t error_code;
+	uint8_t vector;
+	uint32_t a, d;
+
+	asm volatile(KVM_ASM_SAFE_FEP("rdpmc")
+		     : "=a"(a), "=d"(d), KVM_ASM_SAFE_OUTPUTS(vector, error_code)
+		     : "c"(msr)
+		     : KVM_ASM_SAFE_CLOBBERS);
+
+	*val = (uint64_t)a | ((uint64_t)d << 32);
+	return vector;
 }
 
 static inline uint8_t xsetbv_safe(uint32_t index, uint64_t value)

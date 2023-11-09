@@ -267,7 +267,7 @@ static void guest_test_arch_event(uint8_t idx)
 
 	wrmsr(MSR_CORE_PERF_FIXED_CTR_CTRL, FIXED_PMC_CTRL(i, FIXED_PMC_KERNEL));
 
-	__guest_test_arch_event(idx, fixed_event, FIXED_PMC_RDPMC_BASE + i,
+	__guest_test_arch_event(idx, fixed_event, i | INTEL_RDPMC_FIXED,
 				MSR_CORE_PERF_FIXED_CTR0 + i,
 				MSR_CORE_PERF_GLOBAL_CTRL,
 				FIXED_PMC_GLOBAL_CTRL_ENABLE(i));
@@ -320,12 +320,23 @@ __GUEST_ASSERT(expect_gp ? vector == GP_VECTOR : !vector,			\
 	       "Expected %s on " #insn "(0x%x), got vector %u",			\
 	       expect_gp ? "#GP" : "no fault", msr, vector)			\
 
+#define GUEST_ASSERT_PMC_VALUE(insn, msr, val, expected)			\
+	__GUEST_ASSERT(val == expected_val,					\
+		       "Expected " #insn "(0x%x) to yield 0x%lx, got 0x%lx",	\
+		       msr, expected_val, val);
+
 static void guest_rd_wr_counters(uint32_t base_msr, uint8_t nr_possible_counters,
 				 uint8_t nr_counters, uint32_t or_mask)
 {
+	const bool pmu_has_fast_mode = host_cpu_is_intel && !guest_get_pmu_version();
 	uint8_t i;
 
 	for (i = 0; i < nr_possible_counters; i++) {
+		/*
+		 * TODO: Test a value that validates full-width writes and the
+		 * width of the counters.
+		 */
+		const uint64_t test_val = 0xffff;
 		const uint32_t msr = base_msr + i;
 
 		/*
@@ -339,13 +350,14 @@ static void guest_rd_wr_counters(uint32_t base_msr, uint8_t nr_possible_counters
 		 * KVM drops writes to MSR_P6_PERFCTR[0|1] if the counters are
 		 * unsupported, i.e. doesn't #GP and reads back '0'.
 		 */
-		const uint64_t expected_val = expect_success ? 0xffff : 0;
+		const uint64_t expected_val = expect_success ? test_val : 0;
 		const bool expect_gp = !expect_success && msr != MSR_P6_PERFCTR0 &&
 				       msr != MSR_P6_PERFCTR1;
+		uint32_t rdpmc_idx;
 		uint8_t vector;
 		uint64_t val;
 
-		vector = wrmsr_safe(msr, 0xffff);
+		vector = wrmsr_safe(msr, test_val);
 		GUEST_ASSERT_PMC_MSR_ACCESS(WRMSR, msr, expect_gp, vector);
 
 		vector = rdmsr_safe(msr, &val);
@@ -353,9 +365,36 @@ static void guest_rd_wr_counters(uint32_t base_msr, uint8_t nr_possible_counters
 
 		/* On #GP, the result of RDMSR is undefined. */
 		if (!expect_gp)
-			__GUEST_ASSERT(val == expected_val,
-				       "Expected RDMSR(0x%x) to yield 0x%lx, got 0x%lx",
-				       msr, expected_val, val);
+			GUEST_ASSERT_PMC_VALUE(RDMSR, msr, val, expected_val);
+
+		rdpmc_idx = i;
+		if (base_msr == MSR_CORE_PERF_FIXED_CTR0)
+			rdpmc_idx |= INTEL_RDPMC_FIXED;
+
+		/* Redo the read tests with RDPMC, and with forced emulation. */
+		vector = rdpmc_safe(rdpmc_idx, &val);
+		GUEST_ASSERT_PMC_MSR_ACCESS(RDPMC, rdpmc_idx, !expect_success, vector);
+		if (expect_success)
+			GUEST_ASSERT_PMC_VALUE(RDPMC, rdpmc_idx, val, expected_val);
+
+		vector = rdpmc_safe_fep(rdpmc_idx, &val);
+		GUEST_ASSERT_PMC_MSR_ACCESS(RDPMC, rdpmc_idx, !expect_success, vector);
+		if (expect_success)
+			GUEST_ASSERT_PMC_VALUE(RDPMC, rdpmc_idx, val, expected_val);
+
+		/*
+		 * KVM doesn't support non-architectural PMUs, i.e. it should
+		 * impossible to have fast mode RDPMC.  Verify that attempting
+		 * to use fast RDPMC always #GPs.
+		 */
+		GUEST_ASSERT(!expect_success || !pmu_has_fast_mode);
+		rdpmc_idx |= INTEL_RDPMC_FAST;
+
+		vector = rdpmc_safe(rdpmc_idx, &val);
+		GUEST_ASSERT_PMC_MSR_ACCESS(RDPMC, rdpmc_idx, true, vector);
+
+		vector = rdpmc_safe_fep(rdpmc_idx, &val);
+		GUEST_ASSERT_PMC_MSR_ACCESS(RDPMC, rdpmc_idx, true, vector);
 
 		vector = wrmsr_safe(msr, 0);
 		GUEST_ASSERT_PMC_MSR_ACCESS(WRMSR, msr, expect_gp, vector);

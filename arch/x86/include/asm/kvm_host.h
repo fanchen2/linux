@@ -1444,6 +1444,13 @@ struct kvm_arch {
 	struct list_head tdp_mmu_roots;
 
 	/*
+	 * Used to avoid unnecessarily acquiring mmu_lock for write during TDP
+	 * MMU root allocation.  This lock must NOT be taken by anything other
+	 * than kvm_tdp_mmu_alloc_root().
+	 */
+	spinlock_t tdp_mmu_root_alloc_lock;
+
+	/*
 	 * Protects accesses to the following fields when the MMU lock
 	 * is held in read mode:
 	 *  - tdp_mmu_roots (above)

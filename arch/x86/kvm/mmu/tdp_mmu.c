@@ -15,6 +15,7 @@
 void kvm_mmu_init_tdp_mmu(struct kvm *kvm)
 {
 	INIT_LIST_HEAD(&kvm->arch.tdp_mmu_roots);
+	spin_lock_init(&kvm->arch.tdp_mmu_root_alloc_lock);
 	spin_lock_init(&kvm->arch.tdp_mmu_pages_lock);
 }
 
@@ -250,20 +251,32 @@ int kvm_tdp_mmu_alloc_root(struct kvm_vcpu *vcpu)
 	 * unnecessary serialization if multiple vCPUs are loading a new root.
 	 * E.g. when bringing up secondary vCPUs, KVM will already have created
 	 * a valid root on behalf of the primary vCPU.
+	 *
+	 * Keep checking for a usable root while another vCPU is in the process
+	 * of allocating a root.  When loading a new root on *all* vCPU, e.g.
+	 * after memslot deletion, multiple vCPUs can race through the initial
+	 * check and end up taking mmu_lock for write, even though only one
+	 * vCPU will actually end up allocating a new root.  Note, a dedicated
+	 * spinlock is required to avoid starvation, as mmu_lock could be held
+	 * by an unrelated long-running operation, e.g. by the task that is
+	 * zapping invalidated roots (trylock doesn't guarantee fairness).
 	 */
-	read_lock(&kvm->mmu_lock);
-	root = kvm_tdp_mmu_try_get_root(vcpu);
-	read_unlock(&kvm->mmu_lock);
+	do {
+		read_lock(&kvm->mmu_lock);
+		root = kvm_tdp_mmu_try_get_root(vcpu);
+		read_unlock(&kvm->mmu_lock);
 
-	if (root)
-		goto out;
+		if (root)
+			goto out;
+	} while (!spin_trylock(&kvm->arch.tdp_mmu_root_alloc_lock));
 
 	write_lock(&kvm->mmu_lock);
 
 	/*
-	 * Recheck for an existing root after acquiring mmu_lock for write.  It
-	 * is possible a new usable root was created between dropping mmu_lock
-	 * (for read) and acquiring it for write.
+	 * Recheck for an existing root one last time, after acquiring mmu_lock
+	 * for write.  It's possible a new usable root was created between this
+	 * task was delayed between dropping mmu_lock (for read) and acquiring
+	 * tdp_mmu_root_alloc_lock.
 	 */
 	root = kvm_tdp_mmu_try_get_root(vcpu);
 	if (root)
@@ -287,6 +300,7 @@ int kvm_tdp_mmu_alloc_root(struct kvm_vcpu *vcpu)
 
 out_unlock:
 	write_unlock(&kvm->mmu_lock);
+	spin_unlock(&kvm->arch.tdp_mmu_root_alloc_lock);
 out:
 	/*
 	 * Note, KVM_REQ_MMU_FREE_OBSOLETE_ROOTS will prevent entering the guest

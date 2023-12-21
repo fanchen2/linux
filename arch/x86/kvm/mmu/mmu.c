@@ -2116,14 +2116,14 @@ static int mmu_sync_children(struct kvm_vcpu *vcpu,
 			flush |= kvm_sync_page(vcpu, sp, &invalid_list) > 0;
 			mmu_pages_clear_parents(&parents);
 		}
-		if (need_resched() || rwlock_needbreak(&vcpu->kvm->mmu_lock)) {
+		if (kvm_mmu_lock_needbreak(vcpu->kvm)) {
 			kvm_mmu_remote_flush_or_zap(vcpu->kvm, &invalid_list, flush);
 			if (!can_yield) {
 				kvm_make_request(KVM_REQ_MMU_SYNC, vcpu);
 				return -EINTR;
 			}
 
-			cond_resched_rwlock_write(&vcpu->kvm->mmu_lock);
+			kvm_mmu_resched_mmu_lock_write(vcpu->kvm);
 			flush = false;
 		}
 	}
@@ -6041,13 +6041,13 @@ static __always_inline bool __walk_slot_rmaps(struct kvm *kvm,
 		if (iterator.rmap)
 			flush |= fn(kvm, iterator.rmap, slot);
 
-		if (need_resched() || rwlock_needbreak(&kvm->mmu_lock)) {
+		if (kvm_mmu_lock_needbreak(kvm)) {
 			if (flush && flush_on_yield) {
 				kvm_flush_remote_tlbs_range(kvm, start_gfn,
 							    iterator.gfn - start_gfn + 1);
 				flush = false;
 			}
-			cond_resched_rwlock_write(&kvm->mmu_lock);
+			kvm_mmu_resched_mmu_lock_write(kvm);
 		}
 	}
 
@@ -6413,7 +6413,7 @@ static inline bool need_topup(struct kvm_mmu_memory_cache *cache, int min)
 
 static bool need_topup_split_caches_or_resched(struct kvm *kvm)
 {
-	if (need_resched() || rwlock_needbreak(&kvm->mmu_lock))
+	if (kvm_mmu_lock_needbreak(kvm))
 		return true;
 
 	/*
@@ -7207,11 +7207,11 @@ static void kvm_recover_nx_huge_pages(struct kvm *kvm)
 			kvm_mmu_prepare_zap_page(kvm, sp, &invalid_list);
 		WARN_ON_ONCE(sp->nx_huge_page_disallowed);
 
-		if (need_resched() || rwlock_needbreak(&kvm->mmu_lock)) {
+		if (kvm_mmu_lock_needbreak(kvm)) {
 			kvm_mmu_remote_flush_or_zap(kvm, &invalid_list, flush);
 			rcu_read_unlock();
 
-			cond_resched_rwlock_write(&kvm->mmu_lock);
+			kvm_mmu_resched_mmu_lock_write(kvm);
 			flush = false;
 
 			rcu_read_lock();

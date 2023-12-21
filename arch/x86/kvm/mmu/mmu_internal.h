@@ -12,6 +12,28 @@
 #define KVM_MMU_WARN_ON(x) BUILD_BUG_ON_INVALID(x)
 #endif
 
+static inline bool kvm_mmu_lock_needbreak(struct kvm *kvm)
+{
+	return should_resched(PREEMPT_LOCK_OFFSET) ||
+	       rwlock_is_contended(&kvm->mmu_lock);
+}
+
+static inline void kvm_mmu_resched_mmu_lock_write(struct kvm *kvm)
+{
+	write_unlock(&kvm->mmu_lock);
+	if (!cond_resched())
+		cpu_relax();
+	write_lock(&kvm->mmu_lock);
+}
+
+static inline void kvm_mmu_resched_mmu_lock_read(struct kvm *kvm)
+{
+	read_unlock(&kvm->mmu_lock);
+	if (!cond_resched())
+		cpu_relax();
+	read_lock(&kvm->mmu_lock);
+}
+
 /* Page table builder macros common to shadow (host) PTEs and guest PTEs. */
 #define __PT_BASE_ADDR_MASK GENMASK_ULL(51, 12)
 #define __PT_LEVEL_SHIFT(level, bits_per_level)	\

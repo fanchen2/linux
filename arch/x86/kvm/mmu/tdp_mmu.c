@@ -655,16 +655,16 @@ static inline bool __must_check tdp_mmu_iter_cond_resched(struct kvm *kvm,
 	if (iter->next_last_level_gfn == iter->yielded_gfn)
 		return false;
 
-	if (need_resched() || rwlock_needbreak(&kvm->mmu_lock)) {
+	if (kvm_mmu_lock_needbreak(kvm)) {
 		if (flush)
 			kvm_flush_remote_tlbs(kvm);
 
 		rcu_read_unlock();
 
 		if (shared)
-			cond_resched_rwlock_read(&kvm->mmu_lock);
+			kvm_mmu_resched_mmu_lock_read(kvm);
 		else
-			cond_resched_rwlock_write(&kvm->mmu_lock);
+			kvm_mmu_resched_mmu_lock_write(kvm);
 
 		rcu_read_lock();
 

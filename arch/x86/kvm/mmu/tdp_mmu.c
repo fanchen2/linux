@@ -743,6 +743,8 @@ static void tdp_mmu_zap_root(struct kvm *kvm, struct kvm_mmu_page *root,
 	 * Because zapping a SP recurses on its children, stepping down to
 	 * PG_LEVEL_4K in the iterator itself is unnecessary.
 	 */
+	__tdp_mmu_zap_root(kvm, root, shared, PG_LEVEL_4K);
+	__tdp_mmu_zap_root(kvm, root, shared, PG_LEVEL_2M);
 	__tdp_mmu_zap_root(kvm, root, shared, PG_LEVEL_1G);
 	__tdp_mmu_zap_root(kvm, root, shared, root->role.level);
 

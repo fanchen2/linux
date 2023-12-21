@@ -5543,8 +5543,13 @@ void kvm_mmu_reset_context(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(kvm_mmu_reset_context);
 
+static atomic_t latency_bins[4];
+static u64 max_latency;
+
 int kvm_mmu_load(struct kvm_vcpu *vcpu)
 {
+	u64 latency;
+
 	int r;
 
 	r = mmu_topup_memory_caches(vcpu, !vcpu->arch.mmu->root_role.direct);
@@ -5553,12 +5558,34 @@ int kvm_mmu_load(struct kvm_vcpu *vcpu)
 	r = mmu_alloc_special_roots(vcpu);
 	if (r)
 		goto out;
+
+	local_irq_disable();
+	latency = ktime_get_ns();
 	if (vcpu->arch.mmu->root_role.direct)
 		r = mmu_alloc_direct_roots(vcpu);
 	else
 		r = mmu_alloc_shadow_roots(vcpu);
+	latency = ktime_get_ns() - latency;
+	local_irq_enable();
+
 	if (r)
 		goto out;
+
+	if (latency > READ_ONCE(max_latency))
+		WRITE_ONCE(max_latency, latency);
+
+	if (latency < 1000)
+		atomic_inc(&latency_bins[0]);
+	else if (latency < 10000)
+		atomic_inc(&latency_bins[1]);
+	else if (latency < 100000)
+		atomic_inc(&latency_bins[2]);
+	else
+		atomic_inc(&latency_bins[3]);
+
+	pr_warn_ratelimited("Latencies | <1000: %u <10000: %u, <100000: %u, >=100000: %u (max: %llu)\n",
+			    atomic_read(&latency_bins[0]), atomic_read(&latency_bins[1]),
+			    atomic_read(&latency_bins[2]), atomic_read(&latency_bins[3]), max_latency);
 
 	kvm_mmu_sync_roots(vcpu);
 

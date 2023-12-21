@@ -742,7 +742,16 @@ static void tdp_mmu_zap_root(struct kvm *kvm, struct kvm_mmu_page *root,
 	 *
 	 * Because zapping a SP recurses on its children, stepping down to
 	 * PG_LEVEL_4K in the iterator itself is unnecessary.
+	 *
+	 * For preemptible kernels, zap at maximum granularity (4KiB SPTEs) so
+	 * that this task can yield as quickly as possible if mmu_lock is
+	 * contended, or if a different task wants to run on this CPU (at the
+	 * cost of a minor increase to the overall runtime of the zap).
 	 */
+	if (preempt_model_preemptible()) {
+		__tdp_mmu_zap_root(kvm, root, shared, PG_LEVEL_4K);
+		__tdp_mmu_zap_root(kvm, root, shared, PG_LEVEL_2M);
+	}
 	__tdp_mmu_zap_root(kvm, root, shared, PG_LEVEL_1G);
 	__tdp_mmu_zap_root(kvm, root, shared, root->role.level);
 

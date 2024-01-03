@@ -3588,10 +3588,11 @@ static void mmu_free_root_page(struct kvm *kvm, hpa_t *root_hpa,
 }
 
 /* roots_to_free must be some combination of the KVM_MMU_ROOT_* flags */
-void kvm_mmu_free_roots(struct kvm *kvm, struct kvm_mmu *mmu,
+void kvm_mmu_free_roots(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 			ulong roots_to_free)
 {
 	bool is_tdp_mmu = tdp_mmu_enabled && mmu->root_role.direct;
+	struct kvm *kvm = vcpu->kvm;
 	int i;
 	LIST_HEAD(invalid_list);
 	bool free_active_root;
@@ -3652,7 +3653,7 @@ void kvm_mmu_free_roots(struct kvm *kvm, struct kvm_mmu *mmu,
 }
 EXPORT_SYMBOL_GPL(kvm_mmu_free_roots);
 
-void kvm_mmu_free_guest_mode_roots(struct kvm *kvm, struct kvm_mmu *mmu)
+void kvm_mmu_free_guest_mode_roots(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu)
 {
 	unsigned long roots_to_free = 0;
 	struct kvm_mmu_page *sp;
@@ -3675,7 +3676,7 @@ void kvm_mmu_free_guest_mode_roots(struct kvm *kvm, struct kvm_mmu *mmu)
 			roots_to_free |= KVM_MMU_ROOT_PREVIOUS(i);
 	}
 
-	kvm_mmu_free_roots(kvm, mmu, roots_to_free);
+	kvm_mmu_free_roots(vcpu, mmu, roots_to_free);
 }
 EXPORT_SYMBOL_GPL(kvm_mmu_free_guest_mode_roots);
 
@@ -4081,7 +4082,7 @@ void kvm_mmu_sync_prev_roots(struct kvm_vcpu *vcpu)
 			roots_to_free |= KVM_MMU_ROOT_PREVIOUS(i);
 
 	/* sync prev_roots by simply freeing them */
-	kvm_mmu_free_roots(vcpu->kvm, vcpu->arch.mmu, roots_to_free);
+	kvm_mmu_free_roots(vcpu, vcpu->arch.mmu, roots_to_free);
 }
 
 static gpa_t nonpaging_gva_to_gpa(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
@@ -4644,13 +4645,13 @@ static inline bool is_root_usable(struct kvm_mmu_root_info *root, gpa_t pgd,
 /*
  * Find out if a previously cached root matching the new pgd/role is available,
  * and insert the current root as the MRU in the cache.
- * If a matching root is found, it is assigned to kvm_mmu->root and
+ * If a matching root is found, it is assigned to mmu->root and
  * true is returned.
- * If no match is found, kvm_mmu->root is left invalid, the LRU root is
+ * If no match is found, mmu->root is left invalid, the LRU root is
  * evicted to make room for the current root, and false is returned.
  */
-static bool cached_root_find_and_keep_current(struct kvm *kvm, struct kvm_mmu *mmu,
-					      gpa_t new_pgd,
+static bool cached_root_find_and_keep_current(struct kvm_vcpu *vcpu,
+					      struct kvm_mmu *mmu, gpa_t new_pgd,
 					      union kvm_mmu_page_role new_role)
 {
 	uint i;
@@ -4672,19 +4673,18 @@ static bool cached_root_find_and_keep_current(struct kvm *kvm, struct kvm_mmu *m
 			return true;
 	}
 
-	kvm_mmu_free_roots(kvm, mmu, KVM_MMU_ROOT_CURRENT);
+	kvm_mmu_free_roots(vcpu, mmu, KVM_MMU_ROOT_CURRENT);
 	return false;
 }
 
 /*
  * Find out if a previously cached root matching the new pgd/role is available.
  * On entry, mmu->root is invalid.
- * If a matching root is found, it is assigned to kvm_mmu->root, the LRU entry
+ * If a matching root is found, it is assigned to mmu->root, the LRU entry
  * of the cache becomes invalid, and true is returned.
- * If no match is found, kvm_mmu->root is left invalid and false is returned.
+ * If no match is found, mmu->root is left invalid and false is returned.
  */
-static bool cached_root_find_without_current(struct kvm *kvm, struct kvm_mmu *mmu,
-					     gpa_t new_pgd,
+static bool cached_root_find_without_current(struct kvm_mmu *mmu, gpa_t new_pgd,
 					     union kvm_mmu_page_role new_role)
 {
 	uint i;
@@ -4704,7 +4704,7 @@ hit:
 	return true;
 }
 
-static bool fast_pgd_switch(struct kvm *kvm, struct kvm_mmu *mmu,
+static bool fast_pgd_switch(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 			    gpa_t new_pgd, union kvm_mmu_page_role new_role)
 {
 	/*
@@ -4712,12 +4712,12 @@ static bool fast_pgd_switch(struct kvm *kvm, struct kvm_mmu *mmu,
 	 * avoid having to deal with PDPTEs and other complexities.
 	 */
 	if (VALID_PAGE(mmu->root.hpa) && !root_to_sp(mmu->root.hpa))
-		kvm_mmu_free_roots(kvm, mmu, KVM_MMU_ROOT_CURRENT);
+		kvm_mmu_free_roots(vcpu, mmu, KVM_MMU_ROOT_CURRENT);
 
 	if (VALID_PAGE(mmu->root.hpa))
-		return cached_root_find_and_keep_current(kvm, mmu, new_pgd, new_role);
+		return cached_root_find_and_keep_current(vcpu, mmu, new_pgd, new_role);
 	else
-		return cached_root_find_without_current(kvm, mmu, new_pgd, new_role);
+		return cached_root_find_without_current(mmu, new_pgd, new_role);
 }
 
 void kvm_mmu_new_pgd(struct kvm_vcpu *vcpu, gpa_t new_pgd)
@@ -4729,7 +4729,7 @@ void kvm_mmu_new_pgd(struct kvm_vcpu *vcpu, gpa_t new_pgd)
 	 * Return immediately if no usable root was found, kvm_mmu_reload()
 	 * will establish a valid root prior to the next VM-Enter.
 	 */
-	if (!fast_pgd_switch(vcpu->kvm, mmu, new_pgd, new_role))
+	if (!fast_pgd_switch(vcpu, mmu, new_pgd, new_role))
 		return;
 
 	/*
@@ -5590,11 +5590,9 @@ out:
 
 void kvm_mmu_unload(struct kvm_vcpu *vcpu)
 {
-	struct kvm *kvm = vcpu->kvm;
-
-	kvm_mmu_free_roots(kvm, &vcpu->arch.root_mmu, KVM_MMU_ROOTS_ALL);
+	kvm_mmu_free_roots(vcpu, &vcpu->arch.root_mmu, KVM_MMU_ROOTS_ALL);
 	WARN_ON_ONCE(VALID_PAGE(vcpu->arch.root_mmu.root.hpa));
-	kvm_mmu_free_roots(kvm, &vcpu->arch.guest_mmu, KVM_MMU_ROOTS_ALL);
+	kvm_mmu_free_roots(vcpu, &vcpu->arch.guest_mmu, KVM_MMU_ROOTS_ALL);
 	WARN_ON_ONCE(VALID_PAGE(vcpu->arch.guest_mmu.root.hpa));
 	vcpu_clear_mmio_info(vcpu, MMIO_GVA_ANY);
 }
@@ -5626,9 +5624,11 @@ static bool is_obsolete_root(struct kvm *kvm, hpa_t root_hpa)
 	return !sp || is_obsolete_sp(kvm, sp);
 }
 
-static void __kvm_mmu_free_obsolete_roots(struct kvm *kvm, struct kvm_mmu *mmu)
+static void __kvm_mmu_free_obsolete_roots(struct kvm_vcpu *vcpu,
+					  struct kvm_mmu *mmu)
 {
 	unsigned long roots_to_free = 0;
+	struct kvm *kvm = vcpu->kvm;
 	int i;
 
 	if (is_obsolete_root(kvm, mmu->root.hpa))
@@ -5640,13 +5640,13 @@ static void __kvm_mmu_free_obsolete_roots(struct kvm *kvm, struct kvm_mmu *mmu)
 	}
 
 	if (roots_to_free)
-		kvm_mmu_free_roots(kvm, mmu, roots_to_free);
+		kvm_mmu_free_roots(vcpu, mmu, roots_to_free);
 }
 
 void kvm_mmu_free_obsolete_roots(struct kvm_vcpu *vcpu)
 {
-	__kvm_mmu_free_obsolete_roots(vcpu->kvm, &vcpu->arch.root_mmu);
-	__kvm_mmu_free_obsolete_roots(vcpu->kvm, &vcpu->arch.guest_mmu);
+	__kvm_mmu_free_obsolete_roots(vcpu, &vcpu->arch.root_mmu);
+	__kvm_mmu_free_obsolete_roots(vcpu, &vcpu->arch.guest_mmu);
 }
 
 static u64 mmu_pte_write_fetch_gpte(struct kvm_vcpu *vcpu, gpa_t *gpa,

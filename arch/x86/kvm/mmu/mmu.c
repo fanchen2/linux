@@ -6671,69 +6671,11 @@ void kvm_mmu_slot_try_split_huge_pages(struct kvm *kvm,
 	 */
 }
 
-static bool kvm_mmu_zap_collapsible_spte(struct kvm *kvm,
-					 struct kvm_rmap_head *rmap_head,
-					 const struct kvm_memory_slot *slot)
-{
-	u64 *sptep;
-	struct rmap_iterator iter;
-	int need_tlb_flush = 0;
-	struct kvm_mmu_page *sp;
-
-restart:
-	for_each_rmap_spte(rmap_head, &iter, sptep) {
-		sp = sptep_to_sp(sptep);
-
-		/*
-		 * We cannot do huge page mapping for indirect shadow pages,
-		 * which are found on the last rmap (level = 1) when not using
-		 * tdp; such shadow pages are synced with the page table in
-		 * the guest, and the guest page table is using 4K page size
-		 * mapping if the indirect sp has level = 1.
-		 */
-		if (sp->role.direct &&
-		    sp->role.level < kvm_mmu_max_mapping_level(kvm, slot, sp->gfn,
-							       PG_LEVEL_NUM)) {
-			kvm_zap_one_rmap_spte(kvm, rmap_head, sptep);
-
-			if (kvm_available_flush_remote_tlbs_range())
-				kvm_flush_remote_tlbs_sptep(kvm, sptep);
-			else
-				need_tlb_flush = 1;
-
-			goto restart;
-		}
-	}
-
-	return need_tlb_flush;
-}
-
-static void kvm_rmap_zap_collapsible_sptes(struct kvm *kvm,
-					   const struct kvm_memory_slot *slot)
-{
-	/*
-	 * Note, use KVM_MAX_HUGEPAGE_LEVEL - 1 since there's no need to zap
-	 * pages that are already mapped at the maximum hugepage level.
-	 */
-	if (walk_slot_rmaps(kvm, slot, kvm_mmu_zap_collapsible_spte,
-			    PG_LEVEL_4K, KVM_MAX_HUGEPAGE_LEVEL - 1, true))
-		kvm_flush_remote_tlbs_memslot(kvm, slot);
-}
-
 void kvm_mmu_zap_collapsible_sptes(struct kvm *kvm,
 				   const struct kvm_memory_slot *slot)
 {
-	if (kvm_memslots_have_rmaps(kvm)) {
-		write_lock(&kvm->mmu_lock);
-		kvm_rmap_zap_collapsible_sptes(kvm, slot);
-		write_unlock(&kvm->mmu_lock);
-	}
-
-	if (tdp_mmu_enabled) {
-		read_lock(&kvm->mmu_lock);
-		kvm_tdp_mmu_zap_collapsible_sptes(kvm, slot);
-		read_unlock(&kvm->mmu_lock);
-	}
+	if (!atomic_read(&kvm->nr_memslots_dirty_logging))
+		kvm_mmu_zap_all_fast(kvm);
 }
 
 void kvm_mmu_slot_leaf_clear_dirty(struct kvm *kvm,

@@ -579,36 +579,6 @@ static inline int tdp_mmu_set_spte_atomic(struct kvm *kvm,
 	return 0;
 }
 
-static inline int tdp_mmu_zap_spte_atomic(struct kvm *kvm,
-					  struct tdp_iter *iter)
-{
-	int ret;
-
-	/*
-	 * Freeze the SPTE by setting it to a special,
-	 * non-present value. This will stop other threads from
-	 * immediately installing a present entry in its place
-	 * before the TLBs are flushed.
-	 */
-	ret = tdp_mmu_set_spte_atomic(kvm, iter, REMOVED_SPTE);
-	if (ret)
-		return ret;
-
-	kvm_flush_remote_tlbs_gfn(kvm, iter->gfn, iter->level);
-
-	/*
-	 * No other thread can overwrite the removed SPTE as they must either
-	 * wait on the MMU lock or use tdp_mmu_set_spte_atomic() which will not
-	 * overwrite the special removed SPTE value. No bookkeeping is needed
-	 * here since the SPTE is going from non-present to non-present.  Use
-	 * the raw write helper to avoid an unnecessary check on volatile bits.
-	 */
-	__kvm_tdp_mmu_write_spte(iter->sptep, 0);
-
-	return 0;
-}
-
-
 /*
  * tdp_mmu_set_spte - Set a TDP MMU SPTE and handle the associated bookkeeping
  * @kvm:	      KVM instance
@@ -1672,71 +1642,6 @@ void kvm_tdp_mmu_clear_dirty_pt_masked(struct kvm *kvm,
 
 	for_each_valid_tdp_mmu_root(kvm, root, slot->as_id)
 		clear_dirty_pt_masked(kvm, root, gfn, mask, wrprot);
-}
-
-static void zap_collapsible_spte_range(struct kvm *kvm,
-				       struct kvm_mmu_page *root,
-				       const struct kvm_memory_slot *slot)
-{
-	gfn_t start = slot->base_gfn;
-	gfn_t end = start + slot->npages;
-	struct tdp_iter iter;
-	int max_mapping_level;
-
-	rcu_read_lock();
-
-	for_each_tdp_pte_min_level(iter, root, PG_LEVEL_2M, start, end) {
-retry:
-		if (tdp_mmu_iter_cond_resched(kvm, &iter, false, true))
-			continue;
-
-		if (iter.level > KVM_MAX_HUGEPAGE_LEVEL ||
-		    !is_shadow_present_pte(iter.old_spte))
-			continue;
-
-		/*
-		 * Don't zap leaf SPTEs, if a leaf SPTE could be replaced with
-		 * a large page size, then its parent would have been zapped
-		 * instead of stepping down.
-		 */
-		if (is_last_spte(iter.old_spte, iter.level))
-			continue;
-
-		/*
-		 * If iter.gfn resides outside of the slot, i.e. the page for
-		 * the current level overlaps but is not contained by the slot,
-		 * then the SPTE can't be made huge.  More importantly, trying
-		 * to query that info from slot->arch.lpage_info will cause an
-		 * out-of-bounds access.
-		 */
-		if (iter.gfn < start || iter.gfn >= end)
-			continue;
-
-		max_mapping_level = kvm_mmu_max_mapping_level(kvm, slot,
-							      iter.gfn, PG_LEVEL_NUM);
-		if (max_mapping_level < iter.level)
-			continue;
-
-		/* Note, a successful atomic zap also does a remote TLB flush. */
-		if (tdp_mmu_zap_spte_atomic(kvm, &iter))
-			goto retry;
-	}
-
-	rcu_read_unlock();
-}
-
-/*
- * Zap non-leaf SPTEs (and free their associated page tables) which could
- * be replaced by huge pages, for GFNs within the slot.
- */
-void kvm_tdp_mmu_zap_collapsible_sptes(struct kvm *kvm,
-				       const struct kvm_memory_slot *slot)
-{
-	struct kvm_mmu_page *root;
-
-	lockdep_assert_held_read(&kvm->mmu_lock);
-	for_each_valid_tdp_mmu_root_yield_safe(kvm, root, slot->as_id)
-		zap_collapsible_spte_range(kvm, root, slot);
 }
 
 /*

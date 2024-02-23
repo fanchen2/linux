@@ -2137,9 +2137,6 @@ void sev_vm_destroy(struct kvm *kvm)
 	struct list_head *head = &sev->regions_list;
 	struct list_head *pos, *q;
 
-	if (!sev_guest(kvm))
-		return;
-
 	WARN_ON(!list_empty(&sev->mirror_vms));
 
 	/* If this is a mirror_kvm release the enc_context_owner and skip sev cleanup */

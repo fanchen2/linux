@@ -1497,7 +1497,8 @@ static void svm_vcpu_free(struct kvm_vcpu *vcpu)
 	svm_leave_nested(vcpu);
 	svm_free_nested(svm);
 
-	sev_free_vcpu(vcpu);
+	if (sev_guest(vcpu->kvm))
+		sev_free_vcpu(vcpu);
 
 	__free_page(pfn_to_page(__sme_clr(svm->vmcb01.pa) >> PAGE_SHIFT));
 	__free_pages(virt_to_page(svm->msrpm), get_order(MSRPM_SIZE));
@@ -4883,7 +4884,9 @@ static void svm_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector)
 static void svm_vm_destroy(struct kvm *kvm)
 {
 	avic_vm_destroy(kvm);
-	sev_vm_destroy(kvm);
+
+	if (sev_guest(kvm))
+		sev_vm_destroy(kvm);
 }
 
 static int svm_vm_init(struct kvm *kvm)

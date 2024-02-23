@@ -707,9 +707,11 @@ static int svm_cpu_init(int cpu)
 	if (!sd->save_area)
 		return ret;
 
-	ret = sev_cpu_init(sd);
-	if (ret)
-		goto free_save_area;
+	if (IS_ENABLED(CONFIG_KVM_AMD_SEV)) {
+		ret = sev_cpu_init(sd);
+		if (ret)
+			goto free_save_area;
+	}
 
 	sd->save_area_pa = __sme_page_pa(sd->save_area);
 	return 0;
@@ -1110,7 +1112,8 @@ static void svm_hardware_unsetup(void)
 {
 	int cpu;
 
-	sev_hardware_unsetup();
+	if (IS_ENABLED(CONFIG_KVM_AMD_SEV))
+		sev_hardware_unsetup();
 
 	for_each_possible_cpu(cpu)
 		svm_cpu_uninit(cpu);
@@ -5149,7 +5152,8 @@ static __init void svm_set_cpu_caps(void)
 	}
 
 	/* CPUID 0x8000001F (SME/SEV features) */
-	sev_set_cpu_caps();
+	if (IS_ENABLED(CONFIG_KVM_AMD_SEV))
+		sev_set_cpu_caps();
 }
 
 static __init int svm_hardware_setup(void)
@@ -5243,7 +5247,8 @@ static __init int svm_hardware_setup(void)
 	 * Note, SEV setup consumes npt_enabled and enable_mmio_caching (which
 	 * may be modified by svm_adjust_mmio_mask()), as well as nrips.
 	 */
-	sev_hardware_setup();
+	if (IS_ENABLED(CONFIG_KVM_AMD_SEV))
+		sev_hardware_setup();
 
 	svm_hv_hardware_setup();
 

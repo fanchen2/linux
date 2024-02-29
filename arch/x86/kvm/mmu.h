@@ -195,9 +195,11 @@ static inline u8 permission_fault(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 				  unsigned pte_access, unsigned pte_pkey,
 				  u64 access)
 {
-	/* strip nested paging fault error codes */
-	unsigned int pfec = access;
 	unsigned long rflags = static_call(kvm_x86_get_rflags)(vcpu);
+	unsigned int pfec = access & (PFERR_PRESENT_MASK |
+				      PFERR_WRITE_MASK |
+				      PFERR_USER_MASK |
+				      PFERR_FETCH_MASK);
 
 	/*
 	 * For explicit supervisor accesses, SMAP is disabled if EFLAGS.AC = 1.
@@ -213,7 +215,7 @@ static inline u8 permission_fault(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 	 */
 	u64 implicit_access = access & PFERR_IMPLICIT_ACCESS;
 	bool not_smap = ((rflags & X86_EFLAGS_AC) | implicit_access) == X86_EFLAGS_AC;
-	int index = (pfec + (not_smap << ilog2(PFERR_RSVD_MASK))) >> 1;
+	int index = (pfec | (not_smap ? PFERR_RSVD_MASK : 0)) >> 1;
 	u32 errcode = PFERR_PRESENT_MASK;
 	bool fault;
 
@@ -221,7 +223,12 @@ static inline u8 permission_fault(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 
 	fault = (mmu->permissions[index] >> pte_access) & 1;
 
-	WARN_ON(pfec & (PFERR_PK_MASK | PFERR_RSVD_MASK));
+	/*
+	 * Sanity check that no bits are set in the legacy #PF error code
+	 * (bits 31:0) other than the supported permission bits (see above).
+	 */
+	WARN_ON_ONCE(pfec != (unsigned int)access);
+
 	if (unlikely(mmu->pkru_mask)) {
 		u32 pkru_bits, offset;
 
@@ -234,8 +241,7 @@ static inline u8 permission_fault(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 		pkru_bits = (vcpu->arch.pkru >> (pte_pkey * 2)) & 3;
 
 		/* clear present bit, replace PFEC.RSVD with ACC_USER_MASK. */
-		offset = (pfec & ~1) +
-			((pte_access & PT_USER_MASK) << (ilog2(PFERR_RSVD_MASK) - PT_USER_SHIFT));
+		offset = (pfec & ~1) | (pte_access & PT_USER_MASK ? PFERR_RSVD_MASK : 0);
 
 		pkru_bits &= mmu->pkru_mask >> offset;
 		errcode |= -pkru_bits & PFERR_PK_MASK;

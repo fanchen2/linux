@@ -13,8 +13,6 @@
 #include "kvm_util.h"
 #include "vmx.h"
 
-static bool fep_available;
-
 #define MSR_NON_EXISTENT 0x474f4f00
 
 static u64 deny_bits = 0;
@@ -258,7 +256,7 @@ static void guest_code_filter_allow(void)
 	GUEST_ASSERT(data == 2);
 	GUEST_ASSERT(guest_exception_count == 0);
 
-	if (fep_available) {
+	if (is_forced_emulation_enabled) {
 		/* Let userspace know we aren't done. */
 		GUEST_SYNC(0);
 
@@ -520,8 +518,6 @@ KVM_ONE_VCPU_TEST(user_msr, msr_filter_allow, guest_code_filter_allow)
 	uint64_t cmd;
 	int rc;
 
-	sync_global_to_guest(vm, fep_available);
-
 	rc = kvm_check_cap(KVM_CAP_X86_USER_SPACE_MSR);
 	TEST_ASSERT(rc, "KVM_CAP_X86_USER_SPACE_MSR is available");
 	vm_enable_cap(vm, KVM_CAP_X86_USER_SPACE_MSR, KVM_MSR_EXIT_REASON_FILTER);
@@ -551,7 +547,7 @@ KVM_ONE_VCPU_TEST(user_msr, msr_filter_allow, guest_code_filter_allow)
 	vcpu_run(vcpu);
 	cmd = process_ucall(vcpu);
 
-	if (fep_available) {
+	if (is_forced_emulation_enabled) {
 		TEST_ASSERT_EQ(cmd, UCALL_SYNC);
 		vm_install_exception_handler(vm, GP_VECTOR, guest_fep_gp_handler);
 
@@ -774,7 +770,5 @@ KVM_ONE_VCPU_TEST(user_msr, user_exit_msr_flags, NULL)
 
 int main(int argc, char *argv[])
 {
-	fep_available = kvm_is_forced_emulation_enabled();
-
 	return test_harness_run(argc, argv);
 }

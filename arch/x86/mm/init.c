@@ -287,6 +287,14 @@ static void setup_pcid(void)
 	if (!boot_cpu_has(X86_FEATURE_PCID))
 		return;
 
+	/*
+	 * PCID is supported in hardware and can be safely exposed to virtual
+	 * machines, even if the kernel doesn't utilize PCID itself, e.g. due
+	 * to lack of PGE support, or because of Intel's errata (which doesn't
+	 * impact VMX non-root mode, a.k.a. guest mode).
+	 */
+	setup_force_cpu_cap(X86_FEATURE_GUEST_PCID);
+
 	if (x86_match_cpu(invlpg_miss_ids)) {
 		pr_info("Incomplete global flushes, disabling PCID");
 		setup_clear_cpu_cap(X86_FEATURE_PCID);

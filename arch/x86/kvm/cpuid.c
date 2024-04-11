@@ -628,6 +628,13 @@ void kvm_set_cpu_caps(void)
 	/* KVM emulates x2apic in software irrespective of host support. */
 	kvm_cpu_cap_set(X86_FEATURE_X2APIC);
 
+	/*
+	 * On some CPUs, PCID can be used in virtual machines, even if it's
+	 * disabled in the host kernel.
+	 */
+	if (boot_cpu_has(X86_FEATURE_GUEST_PCID))
+		kvm_cpu_cap_set(X86_FEATURE_PCID);
+
 	kvm_cpu_cap_mask(CPUID_1_EDX,
 		F(FPU) | F(VME) | F(DE) | F(PSE) |
 		F(TSC) | F(MSR) | F(PAE) | F(MCE) |

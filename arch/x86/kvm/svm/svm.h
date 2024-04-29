@@ -219,6 +219,11 @@ struct vcpu_svm {
 	u32 sysenter_eip_hi;
 	uint64_t tsc_aux;
 
+	struct vmcb_seg saved_ldtr;
+	struct vmcb_seg saved_tr;
+	struct vmcb_seg saved_fs;
+	u64 saved_kernel_gs_base;
+
 	u64 msr_decfg;
 
 	u64 next_rip;

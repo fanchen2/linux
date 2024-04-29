@@ -1499,6 +1499,7 @@ static void svm_prepare_switch_to_guest(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, vcpu->cpu);
+	struct vmcb_save_area *sa = page_address(sd->save_area);
 
 	if (sev_es_guest(vcpu->kvm))
 		sev_es_unmap_ghcb(svm);
@@ -1506,17 +1507,13 @@ static void svm_prepare_switch_to_guest(struct kvm_vcpu *vcpu)
 	if (svm->guest_state_loaded)
 		return;
 
-	/*
-	 * Save additional host state that will be restored on VMEXIT (sev-es)
-	 * or subsequent vmload of host save area.
-	 */
-	vmsave(sd->save_area_pa);
-	if (sev_es_guest(vcpu->kvm)) {
-		struct sev_es_save_area *hostsa;
-		hostsa = (struct sev_es_save_area *)(page_address(sd->save_area) + 0x400);
+	sa->ldtr = svm->saved_ldtr;
+	sa->tr = svm->saved_tr;
+	sa->fs = svm->saved_fs;
+	sa->kernel_gs_base = svm->saved_kernel_gs_base;
 
-		sev_es_prepare_switch_to_guest(svm, hostsa);
-	}
+	if (sev_es_guest(vcpu->kvm))
+		sev_es_prepare_switch_to_guest(svm, (void *)sa + 0x400);
 
 	if (tsc_scaling)
 		__svm_write_tsc_multiplier(vcpu->arch.tsc_scaling_ratio);
@@ -1543,6 +1540,7 @@ static void svm_vcpu_load(struct kvm_vcpu *vcpu, int cpu, bool sched_in)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, cpu);
+	struct vmcb_save_area *sa = page_address(sd->save_area);
 
 	if (sched_in && !kvm_pause_in_guest(vcpu->kvm))
 		shrink_ple_window(vcpu);
@@ -1555,6 +1553,22 @@ static void svm_vcpu_load(struct kvm_vcpu *vcpu, int cpu, bool sched_in)
 	}
 	if (kvm_vcpu_apicv_active(vcpu))
 		avic_vcpu_load(vcpu, cpu);
+
+	/*
+	 * If the vCPU is being loaded for KVM_RUN, save additional host state
+	 * that will be restored on VMEXIT (sev-es) or subsequent vmload of
+	 * host save area.  No need to re-save state if the vCPU task was
+	 * scheduled out from within KVM_RUN and is being scheduled back in on
+	 * the same pCPU.
+	 */
+	if (vcpu->wants_to_run && (vcpu->cpu != cpu || !sched_in)) {
+		vmsave(sd->save_area_pa);
+
+		svm->saved_ldtr = sa->ldtr;
+		svm->saved_tr = sa->tr;
+		svm->saved_fs = sa->fs;
+		svm->saved_kernel_gs_base = sa->kernel_gs_base;
+	}
 }
 
 static void svm_vcpu_put(struct kvm_vcpu *vcpu)

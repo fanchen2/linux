@@ -5505,6 +5505,16 @@ static DEFINE_PER_CPU(bool, hardware_enabled);
 static DEFINE_MUTEX(kvm_usage_lock);
 static int kvm_usage_count;
 
+__weak void kvm_arch_enable_virtualization(void)
+{
+
+}
+
+__weak void kvm_arch_disable_virtualization(void)
+{
+
+}
+
 static int __kvm_enable_virtualization(void)
 {
 	if (__this_cpu_read(hardware_enabled))
@@ -5604,10 +5614,14 @@ static int kvm_enable_virtualization(void)
 	if (kvm_usage_count++)
 		return 0;
 
+	kvm_arch_enable_virtualization();
+
 	r = cpuhp_setup_state(CPUHP_AP_KVM_ONLINE, "kvm/cpu:online",
 			      kvm_online_cpu, kvm_offline_cpu);
-	if (r)
+	if (r) {
+		kvm_arch_disable_virtualization();
 		return r;
+	}
 
 	register_syscore_ops(&kvm_syscore_ops);
 
@@ -5626,6 +5640,7 @@ static int kvm_enable_virtualization(void)
 	    system_state == SYSTEM_RESTART) {
 		unregister_syscore_ops(&kvm_syscore_ops);
 		cpuhp_remove_state(CPUHP_AP_KVM_ONLINE);
+		kvm_arch_disable_virtualization();
 		return -EBUSY;
 	}
 
@@ -5641,6 +5656,7 @@ static void kvm_disable_virtualization(void)
 
 	unregister_syscore_ops(&kvm_syscore_ops);
 	cpuhp_remove_state(CPUHP_AP_KVM_ONLINE);
+	kvm_arch_disable_virtualization();
 }
 
 static int kvm_init_virtualization(void)
